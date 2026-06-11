@@ -660,6 +660,9 @@ process GENERATE_WDL_JSON {
   "MitochondriaMultiSamplePipeline.shift_back_chain": "${params.shift_back_chain_dir}/${ref_name}_ShiftBack.chain",
   "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "${params.ref_interval_dir}/${ref_name}_non_control_region.interval_list",
   "MitochondriaMultiSamplePipeline.control_region_shifted_reference_interval_list": "${params.ref_interval_dir}/${ref_name}_control_region_shifted.interval_list",
+  "MitochondriaMultiSamplePipeline.nuc_interval_list": "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}",
+  "MitochondriaMultiSamplePipeline.use_haplotype_caller_nucdna": true,
+  "MitochondriaMultiSamplePipeline.haplotype_caller_nucdna_dp_lower_bound": 10,
 
   "MitochondriaMultiSamplePipeline.mt_chr_name": "\$CHR_NAME",
   "MitochondriaMultiSamplePipeline.mt_length": \$MT_LEN,
