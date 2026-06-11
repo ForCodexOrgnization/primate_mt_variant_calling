@@ -60,6 +60,13 @@ workflow MitochondriaMultiSamplePipeline {
     # Picard interval_lists (non-control on unshifted, control on shifted)
     File non_control_region_interval_list
     File control_region_shifted_reference_interval_list
+
+    # Optional nuclear/NUMT interval calling. When nuc_interval_list is provided,
+    # call nuclear NUMT intervals with HaplotypeCaller by default.
+    File? nuc_interval_list
+    Boolean use_haplotype_caller_nucdna = true
+    Int haplotype_caller_nucdna_dp_lower_bound = 10
+    Int haplotype_caller_max_reads_per_alignment_start = 75
   }
 
   Array[Array[String]] inputSamples = read_tsv(inputSamplesFile)
@@ -118,6 +125,22 @@ workflow MitochondriaMultiSamplePipeline {
         mt_shift                = mt_shift
     }
 
+    if (use_haplotype_caller_nucdna && defined(nuc_interval_list)) {
+      call MongoHC as CallNucHCIntegrated {
+        input:
+          gatk                           = gatk,
+          input_bam                      = sample[0],
+          input_bai                      = sample[1],
+          ref_fasta                      = select_first([ref_fasta]),
+          ref_fasta_index                = select_first([ref_fasta_index]),
+          ref_dict                       = select_first([ref_dict]),
+          nuc_interval_list              = select_first([nuc_interval_list]),
+          base_name                      = base_name,
+          hc_dp_lower_bound              = haplotype_caller_nucdna_dp_lower_bound,
+          max_reads_per_alignment_start  = haplotype_caller_max_reads_per_alignment_start
+      }
+    }
+
     call CoverageAtEveryBase {
       input:
         picard                                          = picard,
@@ -156,6 +179,9 @@ workflow MitochondriaMultiSamplePipeline {
     Array[File] base_level_coverage_metrics  = CoverageAtEveryBase.table
     Array[File] split_vcf                    = SplitMultiAllelicSites.split_vcf
     Array[File] split_vcf_index              = SplitMultiAllelicSites.split_vcf_index
+    Array[File?] nuc_hc_raw_vcf              = CallNucHCIntegrated.raw_vcf
+    Array[File?] nuc_hc_final_vcf            = CallNucHCIntegrated.final_vcf
+    Array[File?] nuc_hc_final_vcf_index      = CallNucHCIntegrated.final_vcf_index
   }
 }
 
@@ -163,6 +189,116 @@ workflow MitochondriaMultiSamplePipeline {
 # ====================================================================================
 # Tasks
 # ====================================================================================
+
+task MongoHC {
+  input {
+    String gatk
+    File input_bam
+    File input_bai
+    File ref_fasta
+    File ref_fasta_index
+    File ref_dict
+    File nuc_interval_list
+    String base_name
+    Int hc_dp_lower_bound = 10
+    Int max_reads_per_alignment_start = 75
+  }
+
+  String raw_vcf_name         = base_name + ".nuc.raw.vcf"
+  String snp_vcf_name         = base_name + ".nuc.raw.snp.vcf"
+  String indel_vcf_name       = base_name + ".nuc.raw.indel.vcf"
+  String filtered_snp_vcf_name = base_name + ".nuc.filtered.snp.vcf"
+  String filtered_indel_vcf_name = base_name + ".nuc.filtered.indel.vcf"
+  String merged_vcf_name      = base_name + ".nuc.filtered.merged.vcf"
+  String pass_only_vcf_name   = base_name + ".nuc.pass.vcf"
+  String final_vcf_name       = base_name + ".nuc.pass.split.left_aligned.vcf"
+
+  command <<<
+    set -euo pipefail
+
+    java -Xmx4G -jar ~{gatk} HaplotypeCaller \
+      -R ~{ref_fasta} \
+      -I ~{input_bam} \
+      --read-index ~{input_bai} \
+      -L ~{nuc_interval_list} \
+      -O ~{raw_vcf_name} \
+      -contamination 0 \
+      --max-reads-per-alignment-start ~{max_reads_per_alignment_start} \
+      --max-mnp-distance 0 \
+      --annotation StrandBiasBySample \
+      -G StandardAnnotation \
+      -G StandardHCAnnotation \
+      -GQB 10 -GQB 20 -GQB 30 -GQB 40 -GQB 50 -GQB 60 -GQB 70 -GQB 80 -GQB 90
+
+    java -Xmx4G -jar ~{gatk} SelectVariants \
+      -R ~{ref_fasta} \
+      -V ~{raw_vcf_name} \
+      --select-type-to-include SNP \
+      -O ~{snp_vcf_name}
+
+    java -Xmx4G -jar ~{gatk} SelectVariants \
+      -R ~{ref_fasta} \
+      -V ~{raw_vcf_name} \
+      --select-type-to-include INDEL \
+      -O ~{indel_vcf_name}
+
+    java -Xmx4G -jar ~{gatk} VariantFiltration \
+      -R ~{ref_fasta} \
+      -V ~{snp_vcf_name} \
+      -O ~{filtered_snp_vcf_name} \
+      --filter-name "QD_lt_2" --filter-expression "QD < 2.0" \
+      --filter-name "QUAL_lt_30" --filter-expression "QUAL < 30.0" \
+      --filter-name "SOR_gt_3" --filter-expression "SOR > 3.0" \
+      --filter-name "FS_gt_60" --filter-expression "FS > 60.0" \
+      --filter-name "MQ_lt_40" --filter-expression "MQ < 40.0" \
+      --filter-name "MQRankSum_lt_minus_12_5" --filter-expression "MQRankSum < -12.5" \
+      --filter-name "ReadPosRankSum_lt_minus_8" --filter-expression "ReadPosRankSum < -8.0" \
+      --genotype-filter-name "het" --genotype-filter-expression "isHet == 1" \
+      --genotype-filter-name "hom_ref" --genotype-filter-expression "isHomRef == 1" \
+      --genotype-filter-name "low_dp" --genotype-filter-expression "DP < ~{hc_dp_lower_bound}"
+
+    java -Xmx4G -jar ~{gatk} VariantFiltration \
+      -R ~{ref_fasta} \
+      -V ~{indel_vcf_name} \
+      -O ~{filtered_indel_vcf_name} \
+      --filter-name "QD_lt_2" --filter-expression "QD < 2.0" \
+      --filter-name "QUAL_lt_30" --filter-expression "QUAL < 30.0" \
+      --filter-name "FS_gt_200" --filter-expression "FS > 200.0" \
+      --filter-name "SOR_gt_10" --filter-expression "SOR > 10.0" \
+      --filter-name "ReadPosRankSum_lt_minus_20" --filter-expression "ReadPosRankSum < -20.0" \
+      --genotype-filter-name "het" --genotype-filter-expression "isHet == 1" \
+      --genotype-filter-name "hom_ref" --genotype-filter-expression "isHomRef == 1" \
+      --genotype-filter-name "low_dp" --genotype-filter-expression "DP < ~{hc_dp_lower_bound}"
+
+    java -Xmx4G -jar ~{gatk} MergeVcfs \
+      -I ~{filtered_snp_vcf_name} \
+      -I ~{filtered_indel_vcf_name} \
+      -O ~{merged_vcf_name}
+
+    java -Xmx4G -jar ~{gatk} SelectVariants \
+      -R ~{ref_fasta} \
+      -V ~{merged_vcf_name} \
+      -O ~{pass_only_vcf_name} \
+      --exclude-filtered \
+      --set-filtered-gt-to-nocall \
+      --exclude-non-variants
+
+    java -Xmx4G -jar ~{gatk} LeftAlignAndTrimVariants \
+      -R ~{ref_fasta} \
+      -V ~{pass_only_vcf_name} \
+      -O ~{final_vcf_name} \
+      --split-multi-allelics \
+      --dont-trim-alleles \
+      --keep-original-ac
+  >>>
+
+  output {
+    File raw_vcf = raw_vcf_name
+    File raw_vcf_index = raw_vcf_name + ".idx"
+    File final_vcf = final_vcf_name
+    File final_vcf_index = final_vcf_name + ".idx"
+  }
+}
 
 task SubsetBamToChrM {
   input {
