@@ -278,7 +278,7 @@ process FIND_ROUND1_OUTPUTS {
         if [[ -d "\${NUMT_VCF_ROOT}" ]]; then
             find "\${NUMT_VCF_ROOT}" \
                 -type f \
-                \( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \) \
+                \\( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \\) \
                 | sort
         fi
     )
@@ -297,7 +297,7 @@ process FIND_ROUND1_OUTPUTS {
             nuc_vcf="\$(
                 find "\${NUMT_VCF_ROOT}" \
                     -type f \
-                    \( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \) \
+                    \\( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \\) \
                     -printf '%T@\t%p\n' \
                 | sort -k1,1nr \
                 | head -n 1 \
