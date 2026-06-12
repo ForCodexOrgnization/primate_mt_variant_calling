@@ -35,6 +35,7 @@ params.round2_final_vcf_suffix = params.round2_final_vcf_suffix ?: '.round2.cons
 //   <round1_outdir>/<sample_id>/<round1_numt_subdir>/<sample_id><round1_numt_suffix>
 params.round1_numt_subdir = params.round1_numt_subdir ?: 'numt_decoy_ref'
 params.round1_numt_suffix = params.round1_numt_suffix ?: '.original_numt.fa'
+params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.nuc.pass.split.left_aligned.vcf'
 params.strict_numt_ref = params.strict_numt_ref ?: true
 
 log.info """
@@ -49,6 +50,7 @@ Consensus filter expr:  ${params.consensus_filter_expr}
 mt ref dir:             ${params.ref_dir}
 Round1 NUMT subdir:    ${params.round1_numt_subdir}
 Round1 NUMT suffix:     ${params.round1_numt_suffix}
+Round1 NUMT VCF suffix: ${params.round1_nuc_vcf_suffix}
 Strict NUMT ref:        ${params.strict_numt_ref}
 mt shift:               ${params.mt_shift}
 interval padding:       ${params.mt_interval_padding}
@@ -84,10 +86,10 @@ workflow {
     FIND_ROUND1_OUTPUTS(ch_samples)
 
     ch_round1_files = FIND_ROUND1_OUTPUTS.out.round1_files
-    ch_vcf_inputs = ch_round1_files.map { meta, species_name, ref_name, round1_vcf, round1_vcf_tbi, round1_bam, original_numt_fa, original_numt_fai ->
-        tuple(meta, species_name, ref_name, round1_vcf, original_numt_fa, original_numt_fai)
+    ch_vcf_inputs = ch_round1_files.map { meta, species_name, ref_name, round1_vcf, round1_vcf_tbi, round1_bam, original_numt_fa, original_numt_fai, round1_nuc_vcf, round1_nuc_vcf_tbi ->
+        tuple(meta, species_name, ref_name, round1_vcf, original_numt_fa, original_numt_fai, round1_nuc_vcf, round1_nuc_vcf_tbi)
     }
-    ch_bam_inputs = ch_round1_files.map { meta, species_name, ref_name, round1_vcf, round1_vcf_tbi, round1_bam, original_numt_fa, original_numt_fai ->
+    ch_bam_inputs = ch_round1_files.map { meta, species_name, ref_name, round1_vcf, round1_vcf_tbi, round1_bam, original_numt_fa, original_numt_fai, round1_nuc_vcf, round1_nuc_vcf_tbi ->
         tuple(meta, species_name, ref_name, round1_bam)
     }
 
@@ -129,6 +131,8 @@ process FIND_ROUND1_OUTPUTS {
           path("${meta.id}.round1.input.bam"),
           path("${meta.id}.round1.original_numt.fa"),
           path("${meta.id}.round1.original_numt.fa.fai"),
+          path("${meta.id}.round1.nuc.input.vcf.gz"),
+          path("${meta.id}.round1.nuc.input.vcf.gz.tbi"),
           emit: round1_files
 
     script:
@@ -179,6 +183,7 @@ process FIND_ROUND1_OUTPUTS {
 
     ########################################
     # 2) Use sample-specific original NUMT FASTA from round1 PREPARE_DECOY_REFERENCE.
+    #    Round 2 will convert this to consensus NUMT using the Round 1 NUMT VCF.
     ########################################
     numt_fa="\${NUMT_ROOT}/\${SAMPLE_ID}${params.round1_numt_suffix}"
     numt_fai="\${numt_fa}.fai"
@@ -255,10 +260,54 @@ process FIND_ROUND1_OUTPUTS {
     tabix -p vcf "\${SAMPLE_ID}.round1.input.vcf.gz"
 
     ########################################
-    # 5) Sanity checks
+    # 5) Find and standardize Round 1 NUMT HaplotypeCaller VCF for consensus NUMT.
+    #    If older Round 1 outputs do not have the optional NUMT VCF, keep original NUMTs
+    #    by creating a valid empty VCF.
+    ########################################
+    mapfile -t nuc_vcf_hits < <(
+        find "\${VCF_ROOT}" \
+            -type f \
+            \( -name "*${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}.gz" \) \
+            | sort
+    )
+
+    if (( \${#nuc_vcf_hits[@]} == 0 )); then
+        echo "[WARN] Cannot find Round 1 NUMT HaplotypeCaller VCF for sample \${SAMPLE_ID}; consensus NUMT will equal original NUMT" >&2
+        {
+          echo '##fileformat=VCFv4.2'
+          echo -e '#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO'
+        } | bgzip -c > "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+    else
+        if (( \${#nuc_vcf_hits[@]} > 1 )); then
+            echo "[WARN] Found multiple Round 1 NUMT VCF files for sample \${SAMPLE_ID}. Selecting the newest one by modification time:" >&2
+            printf '  %s\n' "\${nuc_vcf_hits[@]}" >&2
+            nuc_vcf="\$(
+                find "\${VCF_ROOT}" \
+                    -type f \
+                    \( -name "*${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}.gz" \) \
+                    -printf '%T@\t%p\n' \
+                | sort -k1,1nr \
+                | head -n 1 \
+                | cut -f2-
+            )"
+        else
+            nuc_vcf="\${nuc_vcf_hits[0]}"
+        fi
+        echo "[INFO] Selected round1 NUMT VCF: \${nuc_vcf}"
+        if [[ "\${nuc_vcf}" == *.gz ]]; then
+            cp "\${nuc_vcf}" "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+        else
+            bgzip -c "\${nuc_vcf}" > "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+        fi
+    fi
+    tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+
+    ########################################
+    # 6) Sanity checks
     ########################################
     samtools quickcheck -v "\${SAMPLE_ID}.round1.input.bam"
     bcftools index -n "\${SAMPLE_ID}.round1.input.vcf.gz" >/dev/null
+    bcftools index -n "\${SAMPLE_ID}.round1.nuc.input.vcf.gz" >/dev/null
     if [[ -s "\${SAMPLE_ID}.round1.original_numt.fa" ]]; then
         samtools faidx "\${SAMPLE_ID}.round1.original_numt.fa" >/dev/null
     else
@@ -276,7 +325,7 @@ process BUILD_CONSENSUS_REFERENCE {
     publishDir "${params.outdir}/${meta.id}/round_2/round2_consensus_ref", mode: 'copy'
 
     input:
-    tuple val(meta), val(species_name), val(ref_name), path(round1_vcf), path(original_numt_fa), path(original_numt_fai)
+    tuple val(meta), val(species_name), val(ref_name), path(round1_vcf), path(original_numt_fa), path(original_numt_fai), path(round1_nuc_vcf), path(round1_nuc_vcf_tbi)
 
     output:
     tuple val(meta), val(species_name), val(ref_name),
@@ -476,19 +525,23 @@ print(f"[INFO] Wrote interval lists: {non_control}, {control_shifted} (padding={
 print(f"[INFO] Wrote ShiftBack chain: {chain}")
 PY_IN_NF
 
-    # 4) Build mtSwirl-like self-reference FASTAs.
-    #    NUMT contigs are original/reference NUMT sequences, not sample consensus NUMTs.
-    #    NUMT contigs come from round1 sample-specific original_numt.fa. If missing, fail when STRICT_NUMT_REF=true.
+    # 4) Build consensus NUMT FASTA and mtSwirl-like self-reference FASTAs.
+    #    NUMT contigs start from Round 1 sample-specific original_numt.fa and are updated
+    #    with the Round 1 NUMT HaplotypeCaller VCF. If no NUMT VCF records are available,
+    #    the consensus NUMT FASTA is identical to the original NUMT FASTA.
     python3 - <<'PY_SELFREF'
 from pathlib import Path
+import gzip
 import sys
 
 sample = "${meta.id}"
 numt_path = Path("${numt_fasta}") if "${numt_fasta}" else None
+nuc_vcf_path = Path("${round1_nuc_vcf}")
 strict = "${strictNumtRef}".lower() == "true"
 
 standard_chrM = Path(f"{sample}.round2.consensus.fa")
 shifted_chrM = Path(f"{sample}.round2.consensus.shifted.fa")
+consensus_numt = Path(f"{sample}.round2.consensus_numt.fa")
 standard_selfref = Path(f"{sample}.round2.selfref.fa")
 shifted_selfref = Path(f"{sample}.round2.selfref.shifted.fa")
 
@@ -503,34 +556,151 @@ if chr_name is None:
 
 seen = {chr_name}
 
+def open_text(path):
+    path = Path(path)
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt")
+    return path.open("rt")
+
+
 def write_wrapped(handle, seq, width=60):
     seq = seq.replace(" ", "").replace("\t", "").upper()
     for i in range(0, len(seq), width):
-        handle.write(seq[i:i+width] + "\\n")
+        handle.write(seq[i:i+width] + "\n")
+
+
+def read_fasta_records(path):
+    records = []
+    header = None
+    seq_parts = []
+    with Path(path).open() as handle:
+        for line in handle:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header is not None:
+                    records.append((header, "".join(seq_parts).upper()))
+                header = line[1:].strip()
+                seq_parts = []
+            else:
+                seq_parts.append(line.strip())
+        if header is not None:
+            records.append((header, "".join(seq_parts).upper()))
+    return records
+
+
+def parse_numt_header(header):
+    # Round 1 PREPARE_DECOY_REFERENCE names intervals as NUMT_<n>_<chrom>_<1-based-start>_<end>.
+    raw_name = header.split()[0]
+    parts = raw_name.split("_")
+    if len(parts) < 5 or parts[0] != "NUMT":
+        return None
+    try:
+        start = int(parts[-2])
+        end = int(parts[-1])
+    except ValueError:
+        return None
+    chrom = "_".join(parts[2:-2])
+    if not chrom or start < 1 or end < start:
+        return None
+    return chrom, start, end
+
+
+def read_vcf_records(path):
+    by_chrom = {}
+    if not Path(path).exists():
+        return by_chrom
+    with open_text(path) as handle:
+        for line in handle:
+            if not line or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 8:
+                continue
+            chrom, pos_s, _id, ref, alt, qual, filt, info = fields[:8]
+            if filt not in ("PASS", "."):
+                continue
+            if "," in alt or alt in (".", "*") or alt.startswith("<"):
+                continue
+            try:
+                pos = int(pos_s)
+            except ValueError:
+                continue
+            by_chrom.setdefault(chrom, []).append((pos, ref.upper(), alt.upper()))
+    for chrom in by_chrom:
+        by_chrom[chrom].sort(key=lambda x: x[0])
+    return by_chrom
+
+
+def build_consensus_numt(original_fa, nuc_vcf, out_fa):
+    if original_fa is None or str(original_fa) == "":
+        print("[WARN] original NUMT FASTA was not provided; consensus NUMT FASTA is empty", file=sys.stderr)
+        out_fa.write_text("")
+        return 0, 0
+    if not original_fa.exists():
+        msg = f"NUMT FASTA not found: {original_fa}"
+        if strict:
+            raise SystemExit("ERROR: " + msg)
+        print("[WARN] " + msg + "; consensus NUMT FASTA is empty", file=sys.stderr)
+        out_fa.write_text("")
+        return 0, 0
+    if original_fa.stat().st_size == 0:
+        print(f"[INFO] NUMT FASTA is empty: {original_fa}; self-reference is chrM-only for this sample", file=sys.stderr)
+        out_fa.write_text("")
+        return 0, 0
+
+    variants = read_vcf_records(nuc_vcf)
+    records = read_fasta_records(original_fa)
+    applied_total = 0
+
+    with out_fa.open("w") as out:
+        for header, seq in records:
+            parsed = parse_numt_header(header)
+            seq_list = list(seq)
+            applied = 0
+            offset = 0
+            last_ref_end = -1
+            if parsed is not None:
+                chrom, start, end = parsed
+                for pos, ref, alt in variants.get(chrom, []):
+                    if pos < start or pos > end:
+                        continue
+                    ref_end = pos + len(ref) - 1
+                    if ref_end > end:
+                        continue
+                    if pos <= last_ref_end:
+                        print(f"[WARN] Skipping overlapping NUMT variant {chrom}:{pos} {ref}>{alt} for {header}", file=sys.stderr)
+                        continue
+                    local0 = pos - start + offset
+                    observed = "".join(seq_list[local0:local0 + len(ref)]).upper()
+                    if observed != ref:
+                        print(
+                            f"[WARN] Skipping NUMT variant {chrom}:{pos} {ref}>{alt} for {header}: observed {observed}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    seq_list[local0:local0 + len(ref)] = list(alt)
+                    offset += len(alt) - len(ref)
+                    last_ref_end = ref_end
+                    applied += 1
+            else:
+                print(f"[WARN] Cannot parse NUMT FASTA header; leaving sequence unchanged: {header}", file=sys.stderr)
+
+            out.write(f">{header}\n")
+            write_wrapped(out, "".join(seq_list))
+            applied_total += applied
+    print(f"[INFO] Wrote consensus NUMT FASTA: {out_fa} (records={len(records)}, applied_variants={applied_total})")
+    return len(records), applied_total
 
 
 def append_sanitized_numts(out_handle, numt_fa):
-    if numt_fa is None or str(numt_fa) == "":
-        print("[WARN] original NUMT FASTA was not provided; self-reference is chrM-only", file=sys.stderr)
-        return 0
-    if not numt_fa.exists():
-        msg = f"NUMT FASTA not found: {numt_fa}"
-        if strict:
-            raise SystemExit("ERROR: " + msg)
-        print("[WARN] " + msg + "; self-reference is chrM-only for this sample", file=sys.stderr)
-        return 0
-    if numt_fa.stat().st_size == 0:
-        print(f"[INFO] NUMT FASTA is empty: {numt_fa}; self-reference is chrM-only for this sample", file=sys.stderr)
+    if numt_fa is None or str(numt_fa) == "" or not numt_fa.exists() or numt_fa.stat().st_size == 0:
+        print("[INFO] consensus NUMT FASTA is empty; self-reference is chrM-only for this sample", file=sys.stderr)
         return 0
 
     n = 0
-    header = None
-    seq_parts = []
-
-    def flush():
-        nonlocal n, header, seq_parts
-        if header is None:
-            return
+    for header, seq in read_fasta_records(numt_fa):
         raw_name = header.split()[0]
         clean = "".join(c if c.isalnum() or c in "._:-" else "_" for c in raw_name)
         if not clean:
@@ -540,35 +710,23 @@ def append_sanitized_numts(out_handle, numt_fa):
         while clean in seen:
             clean = f"NUMT_{n+1}_{clean}"
         seen.add(clean)
-        seq = "".join(seq_parts).strip().upper()
         if seq:
-            out_handle.write(f">{clean} original_NUMT source={raw_name}\\n")
+            out_handle.write(f">{clean} consensus_NUMT source={raw_name}\n")
             write_wrapped(out_handle, seq)
             n += 1
-        header = None
-        seq_parts = []
-
-    with numt_fa.open() as handle:
-        for line in handle:
-            line = line.rstrip("\\n")
-            if not line:
-                continue
-            if line.startswith(">"):
-                flush()
-                header = line[1:].strip()
-            else:
-                seq_parts.append(line.strip())
-        flush()
-    print(f"[INFO] Appended {n} original NUMT contigs from {numt_fa}")
+    print(f"[INFO] Appended {n} consensus NUMT contigs from {numt_fa}")
     return n
+
+build_consensus_numt(numt_path, nuc_vcf_path, consensus_numt)
 
 for chr_fa, self_fa in [(standard_chrM, standard_selfref), (shifted_chrM, shifted_selfref)]:
     seen.clear(); seen.add(chr_name)
+    chr_text = chr_fa.read_text()
     with self_fa.open("w") as out:
-        out.write(chr_fa.read_text())
-        if not chr_fa.read_text().endswith("\\n"):
-            out.write("\\n")
-        append_sanitized_numts(out, numt_path)
+        out.write(chr_text)
+        if not chr_text.endswith("\n"):
+            out.write("\n")
+        append_sanitized_numts(out, consensus_numt)
 
 PY_SELFREF
 
