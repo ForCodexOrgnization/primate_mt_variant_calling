@@ -61,8 +61,9 @@ workflow MitochondriaMultiSamplePipeline {
     File non_control_region_interval_list
     File control_region_shifted_reference_interval_list
 
-    # Optional nuclear/NUMT interval calling. When nuc_interval_list is provided,
-    # call nuclear NUMT intervals with HaplotypeCaller by default.
+    # Optional nuclear/NUMT interval calling. The interval_list must be built from
+    # high-confidence NUMT BED coordinates against the same whole-genome reference
+    # dictionary used by ref_fasta/ref_dict.
     File? nuc_interval_list
     Boolean use_haplotype_caller_nucdna = true
     Int haplotype_caller_nucdna_dp_lower_bound = 10

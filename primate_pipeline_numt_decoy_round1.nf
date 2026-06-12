@@ -628,13 +628,20 @@ process GENERATE_WDL_JSON {
     MT_LEN=\$(contig_length_from_fai "\$MT_FAI" "\$CHR_NAME")
 
     OPTIONAL_NUCDNA_INPUTS=""
+    NUMT_BED="${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
     if [[ -s "${params.wdl_script}" ]] && grep -q 'nuc_interval_list' "${params.wdl_script}"; then
-        OPTIONAL_NUCDNA_INPUTS=\$(cat <<EOFNUC
-  "MitochondriaMultiSamplePipeline.nuc_interval_list": "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}",
+        if [[ -s "\${NUMT_BED}" ]] && awk '\$0 !~ /^#/ && NF >= 3 && \$3 > \$2 { found=1; exit } END { exit(found ? 0 : 1) }' "\${NUMT_BED}"; then
+            java -Xmx4G -jar "${params.picard_jar}" BedToIntervalList               I="\${NUMT_BED}"               O="${meta.id}.highconf_numt.interval_list"               SD="${params.global_ref_dir}/${ref_name}.dict"
+            OPTIONAL_NUCDNA_INPUTS=\$(cat <<EOFNUC
+  "MitochondriaMultiSamplePipeline.nuc_interval_list": "\$(readlink -f ${meta.id}.highconf_numt.interval_list)",
   "MitochondriaMultiSamplePipeline.use_haplotype_caller_nucdna": true,
   "MitochondriaMultiSamplePipeline.haplotype_caller_nucdna_dp_lower_bound": 10,
 EOFNUC
 )
+        else
+            echo "[INFO] No valid high-confidence NUMT intervals for ${meta.id}; disabling optional NUMT HaplotypeCaller" >&2
+            OPTIONAL_NUCDNA_INPUTS='  "MitochondriaMultiSamplePipeline.use_haplotype_caller_nucdna": false,'
+        fi
     else
         echo "[WARN] WDL ${params.wdl_script} does not declare nuc_interval_list; omitting optional NUMT HaplotypeCaller inputs from JSON" >&2
     fi
