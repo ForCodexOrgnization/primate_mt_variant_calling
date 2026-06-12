@@ -35,7 +35,11 @@ params.round2_final_vcf_suffix = params.round2_final_vcf_suffix ?: '.round2.cons
 //   <round1_outdir>/<sample_id>/<round1_numt_subdir>/<sample_id><round1_numt_suffix>
 params.round1_numt_subdir = params.round1_numt_subdir ?: 'numt_decoy_ref'
 params.round1_numt_suffix = params.round1_numt_suffix ?: '.original_numt.fa'
-params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.nuc.pass.split.left_aligned.vcf'
+// Round1 decoy-coordinate NUMT VCF published by CALL_NUMT_VARIANTS_DECOY.
+// Expected path by default:
+//   <round1_outdir>/<sample_id>/round_1/<round1_numt_vcf_subdir>/<sample_id><round1_nuc_vcf_suffix>
+params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_variant_calling'
+params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.raw.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
 
 log.info """
@@ -48,8 +52,9 @@ Round1 VCF subdir:      ${params.round1_vcf_subdir}
 Output dir:             ${params.outdir}
 Consensus filter expr:  ${params.consensus_filter_expr}
 mt ref dir:             ${params.ref_dir}
-Round1 NUMT subdir:    ${params.round1_numt_subdir}
+Round1 NUMT subdir:     ${params.round1_numt_subdir}
 Round1 NUMT suffix:     ${params.round1_numt_suffix}
+Round1 NUMT VCF subdir: ${params.round1_numt_vcf_subdir}
 Round1 NUMT VCF suffix: ${params.round1_nuc_vcf_suffix}
 Strict NUMT ref:        ${params.strict_numt_ref}
 mt shift:               ${params.mt_shift}
@@ -147,6 +152,7 @@ process FIND_ROUND1_OUTPUTS {
     BAM_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_bam_subdir}"
     VCF_ROOT="\${SAMPLE_DIR}/${params.round1_vcf_subdir}"
     NUMT_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_numt_subdir}"
+    NUMT_VCF_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_numt_vcf_subdir}"
 
     [[ -d "\${SAMPLE_DIR}" ]] || {
         echo "ERROR: Missing round1 sample directory: \${SAMPLE_DIR}" >&2
@@ -166,6 +172,10 @@ process FIND_ROUND1_OUTPUTS {
     [[ -d "\${NUMT_ROOT}" ]] || {
         echo "ERROR: Missing round1 NUMT FASTA directory: \${NUMT_ROOT}" >&2
         exit 1
+    }
+
+    [[ -d "\${NUMT_VCF_ROOT}" ]] || {
+        echo "[WARN] Missing round1 decoy NUMT VCF directory: \${NUMT_VCF_ROOT}; consensus NUMT will equal original NUMT if no fallback VCF is found" >&2
     }
 
     ########################################
@@ -260,31 +270,34 @@ process FIND_ROUND1_OUTPUTS {
     tabix -p vcf "\${SAMPLE_ID}.round1.input.vcf.gz"
 
     ########################################
-    # 5) Find and standardize Round 1 NUMT HaplotypeCaller VCF for consensus NUMT.
-    #    If older Round 1 outputs do not have the optional NUMT VCF, keep original NUMTs
-    #    by creating a valid empty VCF.
+    # 5) Find and standardize Round 1 decoy-coordinate NUMT VCF for consensus NUMT.
+    #    This is produced by CALL_NUMT_VARIANTS_DECOY under round_1/numt_decoy_variant_calling.
+    #    If older Round 1 outputs do not have it, keep original NUMTs by creating a valid empty VCF.
     ########################################
     mapfile -t nuc_vcf_hits < <(
-        find "\${VCF_ROOT}" \
-            -type f \
-            \( -name "*${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}.gz" \) \
-            | sort
+        if [[ -d "\${NUMT_VCF_ROOT}" ]]; then
+            find "\${NUMT_VCF_ROOT}" \
+                -type f \
+                \( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \) \
+                | sort
+        fi
     )
 
     if (( \${#nuc_vcf_hits[@]} == 0 )); then
-        echo "[WARN] Cannot find Round 1 NUMT HaplotypeCaller VCF for sample \${SAMPLE_ID}; consensus NUMT will equal original NUMT" >&2
+        echo "[WARN] Cannot find Round 1 decoy NUMT VCF for sample \${SAMPLE_ID} under \${NUMT_VCF_ROOT}; consensus NUMT will equal original NUMT" >&2
         {
           echo '##fileformat=VCFv4.2'
           echo -e '#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO'
         } | bgzip -c > "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+        tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
     else
         if (( \${#nuc_vcf_hits[@]} > 1 )); then
-            echo "[WARN] Found multiple Round 1 NUMT VCF files for sample \${SAMPLE_ID}. Selecting the newest one by modification time:" >&2
+            echo "[WARN] Found multiple Round 1 decoy NUMT VCF files for sample \${SAMPLE_ID}. Selecting the newest one by modification time:" >&2
             printf '  %s\n' "\${nuc_vcf_hits[@]}" >&2
             nuc_vcf="\$(
-                find "\${VCF_ROOT}" \
+                find "\${NUMT_VCF_ROOT}" \
                     -type f \
-                    \( -name "*${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}.gz" \) \
+                    \( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \) \
                     -printf '%T@\t%p\n' \
                 | sort -k1,1nr \
                 | head -n 1 \
@@ -293,14 +306,21 @@ process FIND_ROUND1_OUTPUTS {
         else
             nuc_vcf="\${nuc_vcf_hits[0]}"
         fi
-        echo "[INFO] Selected round1 NUMT VCF: \${nuc_vcf}"
+        echo "[INFO] Selected round1 decoy NUMT VCF: \${nuc_vcf}"
         if [[ "\${nuc_vcf}" == *.gz ]]; then
             cp "\${nuc_vcf}" "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+            if [[ -s "\${nuc_vcf}.tbi" ]]; then
+                cp "\${nuc_vcf}.tbi" "\${SAMPLE_ID}.round1.nuc.input.vcf.gz.tbi"
+            elif [[ -s "\${nuc_vcf%.gz}.idx" ]]; then
+                cp "\${nuc_vcf%.gz}.idx" "\${SAMPLE_ID}.round1.nuc.input.vcf.gz.tbi"
+            else
+                tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+            fi
         else
             bgzip -c "\${nuc_vcf}" > "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+            tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
         fi
     fi
-    tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
 
     ########################################
     # 6) Sanity checks

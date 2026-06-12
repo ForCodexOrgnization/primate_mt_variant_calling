@@ -47,12 +47,14 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         def species = row[1].trim()
         def ref_name = row[2].trim()
 
-        def round1_dir    = file("${params.outdir}/${sample_id}/round_1")
-        def vc_dir        = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
-        def numt_vc_dir   = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling")
+        def round1_dir      = file("${params.outdir}/${sample_id}/round_1")
+        def vc_dir          = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
+        def numt_vc_vcf     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz")
+        def numt_vc_tbi     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz.tbi")
+        def decoy_interval  = file("${params.outdir}/${sample_id}/round_1/numt_decoy_ref/${sample_id}.decoy_numt.interval_list")
 
-        if (round1_dir.exists() && vc_dir.exists() && numt_vc_dir.exists()) {
-            log.info "SKIP completed sample ${sample_id}: ${round1_dir}, ${vc_dir}, and ${numt_vc_dir} already exist"
+        if (round1_dir.exists() && vc_dir.exists() && numt_vc_vcf.exists() && numt_vc_tbi.exists() && decoy_interval.exists()) {
+            log.info "SKIP completed sample ${sample_id}: existing mtDNA outputs plus ${numt_vc_vcf}, ${numt_vc_tbi}, and ${decoy_interval}"
             return null
         }
 
@@ -485,6 +487,10 @@ process CALL_NUMT_VARIANTS_DECOY {
           path("${meta.id}.numt_decoy.raw.vcf.gz"),
           path("${meta.id}.numt_decoy.raw.vcf.gz.tbi"),
           emit: numt_vcf
+
+    // Publish the exact decoy-coordinate interval list next to the VCF as a
+    // visible replacement for the removed WDL nuc_interval_list input.
+    path("${meta.id}.decoy_numt.interval_list"), emit: numt_interval_list
 
     script:
     """
