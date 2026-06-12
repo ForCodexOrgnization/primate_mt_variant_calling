@@ -223,13 +223,8 @@ task MongoHC {
       --read-index ~{input_bai} \
       -L ~{nuc_interval_list} \
       -O ~{raw_vcf_name} \
-      -contamination 0 \
       --max-reads-per-alignment-start ~{max_reads_per_alignment_start} \
-      --max-mnp-distance 0 \
-      --annotation StrandBiasBySample \
-      -G StandardAnnotation \
-      -G StandardHCAnnotation \
-      -GQB 10 -GQB 20 -GQB 30 -GQB 40 -GQB 50 -GQB 60 -GQB 70 -GQB 80 -GQB 90
+      --annotation StrandBiasBySample
 
     java -Xmx4G -jar ~{gatk} SelectVariants \
       -R ~{ref_fasta} \
