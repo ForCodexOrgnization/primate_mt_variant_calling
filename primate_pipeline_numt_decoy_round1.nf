@@ -15,13 +15,14 @@ nextflow.enable.dsl=2
  *   3) MitoHPC-like extraction of primary reads overlapping chrM + NUMT intervals
  *      and retain only templates with both mates in the target subset
  *   4) FASTQ conversion + realignment to chrM+NUMT decoy
+ *   5) call NUMT variants on the chrM+NUMT decoy coordinate system
  *   6) keep only final chrM alignments
  *   7) convert cleaned chrM BAM -> CRAM
- *   8) feed into existing RUN_WDL_VARIANT_CALLING module
+ *   8) feed cleaned chrM CRAM into existing RUN_WDL_VARIANT_CALLING module
  *
  * Notes:
  *   - NUMT BED is treated as decoy only.
- *   - No NUMT variant calling is done here.
+ *   - NUMT variant calling is done on the round1 chrM+NUMT decoy reference.
  *   - Output CRAM contains chrM-only cleaned reads aligned to chrM.
  */
 
@@ -46,11 +47,12 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         def species = row[1].trim()
         def ref_name = row[2].trim()
 
-        def round1_dir = file("${params.outdir}/${sample_id}/round_1")
-        def vc_dir     = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
+        def round1_dir    = file("${params.outdir}/${sample_id}/round_1")
+        def vc_dir        = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
+        def numt_vc_dir   = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling")
 
-        if (round1_dir.exists() && vc_dir.exists()) {
-            log.info "SKIP completed sample ${sample_id}: ${round1_dir} and ${vc_dir} already exist"
+        if (round1_dir.exists() && vc_dir.exists() && numt_vc_dir.exists()) {
+            log.info "SKIP completed sample ${sample_id}: ${round1_dir}, ${vc_dir}, and ${numt_vc_dir} already exist"
             return null
         }
 
@@ -75,6 +77,9 @@ workflow {
 
     ch_bam_plus_ref = EXTRACT_CANDIDATE_READS.out.bam_with_mates.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
     REALIGN_TO_DECOY(ch_bam_plus_ref)
+
+    ch_numt_call_input = REALIGN_TO_DECOY.out.realign_bam.join(PREPARE_DECOY_REFERENCE.out.decoy_ref_for_numt_calling, by: [0,1,2])
+    CALL_NUMT_VARIANTS_DECOY(ch_numt_call_input)
 
     EXTRACT_FINAL_CHRM_BAM(REALIGN_TO_DECOY.out.realign_bam)
 
@@ -164,6 +169,14 @@ process PREPARE_DECOY_REFERENCE {
           path("${meta.id}.chrM_plus_numt.fa.pac"),
           path("${meta.id}.chrM_plus_numt.fa.sa"),
           emit: decoy_ref
+
+    // Decoy reference bundle for NUMT variant calling in decoy coordinates.
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.chrM_plus_numt.fa"),
+          path("${meta.id}.chrM_plus_numt.fa.fai"),
+          path("${meta.id}.chrM_plus_numt.dict"),
+          path("${meta.id}.decoy_numt.interval_list"),
+          emit: decoy_ref_for_numt_calling
 
     // New output for Round 2:
     // original NUMT sequences extracted from the original whole-genome reference.
@@ -255,12 +268,19 @@ process PREPARE_DECOY_REFERENCE {
         exit 1
     }
 
-    # 6. Index decoy reference.
+    # 6. Index decoy reference and prepare decoy-coordinate NUMT intervals.
     samtools faidx ${meta.id}.chrM_plus_numt.fa
+    java -Xmx4G -jar "${params.picard_jar}" CreateSequenceDictionary \
+        R=${meta.id}.chrM_plus_numt.fa \
+        O=${meta.id}.chrM_plus_numt.dict
     bwa index ${meta.id}.chrM_plus_numt.fa
 
+    cp ${meta.id}.chrM_plus_numt.dict ${meta.id}.decoy_numt.interval_list
+    awk 'BEGIN{OFS="\t"} \$1 ~ /^NUMT_/ {print \$1,1,\$2,"+",\$1}' \
+        ${meta.id}.chrM_plus_numt.fa.fai >> ${meta.id}.decoy_numt.interval_list
+
     echo "[INFO] Decoy reference created successfully:"
-    ls -lh ${meta.id}.chrM_plus_numt.fa*
+    ls -lh ${meta.id}.chrM_plus_numt.fa* ${meta.id}.chrM_plus_numt.dict ${meta.id}.decoy_numt.interval_list
     echo "[INFO] Original NUMT FASTA created successfully:"
     ls -lh ${meta.id}.original_numt.fa*
     """
@@ -449,6 +469,104 @@ process REALIGN_TO_DECOY {
     """
 }
 
+process CALL_NUMT_VARIANTS_DECOY {
+    tag { "Call NUMT variants on decoy for ${meta.id}" }
+    label 'wdl_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/numt_decoy_variant_calling", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name),
+          path(decoy_bam), path(decoy_bai),
+          path(decoy_fa), path(decoy_fai), path(decoy_dict),
+          path(decoy_numt_interval_list)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.numt_decoy.raw.vcf.gz"),
+          path("${meta.id}.numt_decoy.raw.vcf.gz.tbi"),
+          emit: numt_vcf
+
+    script:
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    JAVA_BIN="\${JAVA_HOME:-}/bin/java"
+    if [[ ! -x "\$JAVA_BIN" ]]; then
+        JAVA_BIN=\$(command -v java || true)
+    fi
+    [[ -n "\$JAVA_BIN" && -x "\$JAVA_BIN" ]] || {
+        echo "ERROR: java not found" >&2
+        exit 127
+    }
+
+    [[ -s ${decoy_bam} ]] || { echo "ERROR: missing decoy BAM: ${decoy_bam}" >&2; exit 1; }
+    [[ -s ${decoy_bai} ]] || { echo "ERROR: missing decoy BAM index: ${decoy_bai}" >&2; exit 1; }
+    [[ -s ${decoy_fa} ]] || { echo "ERROR: missing decoy FASTA: ${decoy_fa}" >&2; exit 1; }
+    [[ -s ${decoy_fai} ]] || { echo "ERROR: missing decoy FASTA index: ${decoy_fai}" >&2; exit 1; }
+    [[ -s ${decoy_dict} ]] || { echo "ERROR: missing decoy sequence dictionary: ${decoy_dict}" >&2; exit 1; }
+    [[ -s ${decoy_numt_interval_list} ]] || { echo "ERROR: missing decoy NUMT interval list: ${decoy_numt_interval_list}" >&2; exit 1; }
+
+    if [[ \$(grep -vc '^@' ${decoy_numt_interval_list}) -eq 0 ]]; then
+        echo "[INFO] No NUMT intervals in decoy reference; creating empty indexed VCF." >&2
+        python3 - <<'PY_EMPTY_VCF'
+from pathlib import Path
+import zlib
+
+sample = "${meta.id}"
+fai = Path("${decoy_fai}")
+out = Path(f"{sample}.numt_decoy.raw.vcf.gz")
+
+lines = ["##fileformat=VCFv4.2", "##source=CALL_NUMT_VARIANTS_DECOY"]
+with fai.open() as handle:
+    for line in handle:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) >= 2:
+            lines.append(f"##contig=<ID={fields[0]},length={fields[1]}>")
+lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
+payload = ("\n".join(lines) + "\n").encode()
+
+# Write a minimal BGZF stream so GATK can create an index without requiring
+# external HTSlib compression/indexing binaries on the cluster node.
+def bgzf_block(data: bytes) -> bytes:
+    compressor = zlib.compressobj(level=6, method=zlib.DEFLATED, wbits=-15)
+    compressed = compressor.compress(data) + compressor.flush()
+    bsize = 18 + len(compressed) + 8 - 1
+    header = bytes([31, 139, 8, 4, 0, 0, 0, 0, 0, 255, 6, 0, 66, 67, 2, 0]) + bsize.to_bytes(2, "little")
+    trailer = (zlib.crc32(data) & 0xffffffff).to_bytes(4, "little") + (len(data) & 0xffffffff).to_bytes(4, "little")
+    return header + compressed + trailer
+
+# Standard 28-byte BGZF EOF marker.
+eof = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+with out.open("wb") as handle:
+    for offset in range(0, len(payload), 65280):
+        handle.write(bgzf_block(payload[offset:offset + 65280]))
+    handle.write(eof)
+PY_EMPTY_VCF
+        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
+          -I ${meta.id}.numt_decoy.raw.vcf.gz
+        [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: GATK did not create ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+        exit 0
+    fi
+
+    "\$JAVA_BIN" -Xmx8G -jar ${params.gatk_jar} HaplotypeCaller \
+      -R ${decoy_fa} \
+      -I ${decoy_bam} \
+      --read-index ${decoy_bai} \
+      -L ${decoy_numt_interval_list} \
+      -O ${meta.id}.numt_decoy.raw.vcf.gz \
+      --create-output-variant-index true \
+      --max-reads-per-alignment-start 75 \
+      --annotation StrandBiasBySample
+
+    if [[ ! -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]]; then
+        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
+          -I ${meta.id}.numt_decoy.raw.vcf.gz
+    fi
+    [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: missing HaplotypeCaller VCF index: ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+    """
+}
+
 process EXTRACT_FINAL_CHRM_BAM {
     tag { "Extract final primary chrM BAM for ${meta.id}" }
     label 'alignment_related'
@@ -627,24 +745,6 @@ process GENERATE_WDL_JSON {
     CHR_NAME=\$(choose_mt_contig "\$MT_FAI")
     MT_LEN=\$(contig_length_from_fai "\$MT_FAI" "\$CHR_NAME")
 
-    OPTIONAL_NUCDNA_INPUTS=""
-    NUMT_BED="${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
-    if [[ -s "${params.wdl_script}" ]] && grep -q 'nuc_interval_list' "${params.wdl_script}"; then
-        if [[ -s "\${NUMT_BED}" ]] && awk '\$0 !~ /^#/ && NF >= 3 && \$3 > \$2 { found=1; exit } END { exit(found ? 0 : 1) }' "\${NUMT_BED}"; then
-            java -Xmx4G -jar "${params.picard_jar}" BedToIntervalList               I="\${NUMT_BED}"               O="${meta.id}.highconf_numt.interval_list"               SD="${params.global_ref_dir}/${ref_name}.dict"
-            OPTIONAL_NUCDNA_INPUTS=\$(cat <<EOFNUC
-  "MitochondriaMultiSamplePipeline.nuc_interval_list": "\$(readlink -f ${meta.id}.highconf_numt.interval_list)",
-  "MitochondriaMultiSamplePipeline.use_haplotype_caller_nucdna": true,
-  "MitochondriaMultiSamplePipeline.haplotype_caller_nucdna_dp_lower_bound": 10,
-EOFNUC
-)
-        else
-            echo "[INFO] No valid high-confidence NUMT intervals for ${meta.id}; disabling optional NUMT HaplotypeCaller" >&2
-            OPTIONAL_NUCDNA_INPUTS='  "MitochondriaMultiSamplePipeline.use_haplotype_caller_nucdna": false,'
-        fi
-    else
-        echo "[WARN] WDL ${params.wdl_script} does not declare nuc_interval_list; omitting optional NUMT HaplotypeCaller inputs from JSON" >&2
-    fi
 
     cat > ${meta.id}_wdl_inputs.json <<-EOFJSON
 {
@@ -679,7 +779,6 @@ EOFNUC
   "MitochondriaMultiSamplePipeline.shift_back_chain": "${params.shift_back_chain_dir}/${ref_name}_ShiftBack.chain",
   "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "${params.ref_interval_dir}/${ref_name}_non_control_region.interval_list",
   "MitochondriaMultiSamplePipeline.control_region_shifted_reference_interval_list": "${params.ref_interval_dir}/${ref_name}_control_region_shifted.interval_list",
-\${OPTIONAL_NUCDNA_INPUTS}
   "MitochondriaMultiSamplePipeline.mt_chr_name": "\$CHR_NAME",
   "MitochondriaMultiSamplePipeline.mt_length": \$MT_LEN,
   "MitochondriaMultiSamplePipeline.mt_nc_start": ${params.mt_nc_start},
