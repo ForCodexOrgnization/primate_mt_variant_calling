@@ -627,6 +627,18 @@ process GENERATE_WDL_JSON {
     CHR_NAME=\$(choose_mt_contig "\$MT_FAI")
     MT_LEN=\$(contig_length_from_fai "\$MT_FAI" "\$CHR_NAME")
 
+    OPTIONAL_NUCDNA_INPUTS=""
+    if [[ -s "${params.wdl_script}" ]] && grep -q 'nuc_interval_list' "${params.wdl_script}"; then
+        OPTIONAL_NUCDNA_INPUTS=\$(cat <<EOFNUC
+  "MitochondriaMultiSamplePipeline.nuc_interval_list": "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}",
+  "MitochondriaMultiSamplePipeline.use_haplotype_caller_nucdna": true,
+  "MitochondriaMultiSamplePipeline.haplotype_caller_nucdna_dp_lower_bound": 10,
+EOFNUC
+)
+    else
+        echo "[WARN] WDL ${params.wdl_script} does not declare nuc_interval_list; omitting optional NUMT HaplotypeCaller inputs from JSON" >&2
+    fi
+
     cat > ${meta.id}_wdl_inputs.json <<-EOFJSON
 {
   "MitochondriaMultiSamplePipeline.picard": "${params.picard_jar}",
@@ -660,7 +672,7 @@ process GENERATE_WDL_JSON {
   "MitochondriaMultiSamplePipeline.shift_back_chain": "${params.shift_back_chain_dir}/${ref_name}_ShiftBack.chain",
   "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "${params.ref_interval_dir}/${ref_name}_non_control_region.interval_list",
   "MitochondriaMultiSamplePipeline.control_region_shifted_reference_interval_list": "${params.ref_interval_dir}/${ref_name}_control_region_shifted.interval_list",
-
+\${OPTIONAL_NUCDNA_INPUTS}
   "MitochondriaMultiSamplePipeline.mt_chr_name": "\$CHR_NAME",
   "MitochondriaMultiSamplePipeline.mt_length": \$MT_LEN,
   "MitochondriaMultiSamplePipeline.mt_nc_start": ${params.mt_nc_start},
