@@ -509,26 +509,61 @@ process CALL_NUMT_VARIANTS_DECOY {
 
     if [[ \$(grep -vc '^@' ${decoy_numt_interval_list}) -eq 0 ]]; then
         echo "[INFO] No NUMT intervals in decoy reference; creating empty indexed VCF." >&2
-        {
-            echo '##fileformat=VCFv4.2'
-            echo '##source=CALL_NUMT_VARIANTS_DECOY'
-            awk 'BEGIN{OFS=""} {print "##contig=<ID=" \$1 ",length=" \$2 ">"}' ${decoy_fai}
-            printf '#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\t%s\\n' '${meta.id}'
-        } | bgzip -c > ${meta.id}.numt_decoy.raw.vcf.gz
-        tabix -f -p vcf ${meta.id}.numt_decoy.raw.vcf.gz
+        python3 - <<'PY_EMPTY_VCF'
+from pathlib import Path
+import zlib
+
+sample = "${meta.id}"
+fai = Path("${decoy_fai}")
+out = Path(f"{sample}.numt_decoy.raw.vcf.gz")
+
+lines = ["##fileformat=VCFv4.2", "##source=CALL_NUMT_VARIANTS_DECOY"]
+with fai.open() as handle:
+    for line in handle:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) >= 2:
+            lines.append(f"##contig=<ID={fields[0]},length={fields[1]}>")
+lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
+payload = ("\n".join(lines) + "\n").encode()
+
+# Write a minimal BGZF stream so GATK can create an index without requiring
+# external HTSlib compression/indexing binaries on the cluster node.
+def bgzf_block(data: bytes) -> bytes:
+    compressor = zlib.compressobj(level=6, method=zlib.DEFLATED, wbits=-15)
+    compressed = compressor.compress(data) + compressor.flush()
+    bsize = 18 + len(compressed) + 8 - 1
+    header = bytes([31, 139, 8, 4, 0, 0, 0, 0, 0, 255, 6, 0, 66, 67, 2, 0]) + bsize.to_bytes(2, "little")
+    trailer = (zlib.crc32(data) & 0xffffffff).to_bytes(4, "little") + (len(data) & 0xffffffff).to_bytes(4, "little")
+    return header + compressed + trailer
+
+# Standard 28-byte BGZF EOF marker.
+eof = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+with out.open("wb") as handle:
+    for offset in range(0, len(payload), 65280):
+        handle.write(bgzf_block(payload[offset:offset + 65280]))
+    handle.write(eof)
+PY_EMPTY_VCF
+        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
+          -I ${meta.id}.numt_decoy.raw.vcf.gz
+        [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: GATK did not create ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
         exit 0
     fi
 
-    "\$JAVA_BIN" -Xmx8G -jar ${params.gatk_jar} HaplotypeCaller \\
-      -R ${decoy_fa} \\
-      -I ${decoy_bam} \\
-      --read-index ${decoy_bai} \\
-      -L ${decoy_numt_interval_list} \\
-      -O ${meta.id}.numt_decoy.raw.vcf.gz \\
-      --max-reads-per-alignment-start 75 \\
+    "\$JAVA_BIN" -Xmx8G -jar ${params.gatk_jar} HaplotypeCaller \
+      -R ${decoy_fa} \
+      -I ${decoy_bam} \
+      --read-index ${decoy_bai} \
+      -L ${decoy_numt_interval_list} \
+      -O ${meta.id}.numt_decoy.raw.vcf.gz \
+      --create-output-variant-index true \
+      --max-reads-per-alignment-start 75 \
       --annotation StrandBiasBySample
 
-    tabix -f -p vcf ${meta.id}.numt_decoy.raw.vcf.gz
+    if [[ ! -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]]; then
+        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
+          -I ${meta.id}.numt_decoy.raw.vcf.gz
+    fi
+    [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: missing HaplotypeCaller VCF index: ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
     """
 }
 
