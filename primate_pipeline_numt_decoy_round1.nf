@@ -35,6 +35,7 @@ CRAM search dirs:        ${params.cram_dirs}
 Whole-genome ref dir:    ${params.global_ref_dir}
 mt ref dir:              ${params.ref_dir}
 NUMT BED dir:            ${params.numt_bed_dir}
+Consensus NUMT dir:      ${params.consensus_numt_dir ?: 'not_set'}
 WDL Script:              ${params.wdl_script}
 ========================================
 """
@@ -193,6 +194,9 @@ process PREPARE_DECOY_REFERENCE {
     def whole_ref = "${params.global_ref_dir}/${ref_name}.fasta"
     def numt_bed  = "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
     def mt_contig = params.mt_contig ?: "chrM"
+    def consensus_numt_dir = params.consensus_numt_dir ?: ""
+    def consensus_numt_suffix = params.consensus_numt_suffix ?: ".consensus_numt.fa"
+    def consensus_numt_fa = consensus_numt_dir ? "${consensus_numt_dir}/${meta.id}${consensus_numt_suffix}" : ""
 
     """
     #!/usr/bin/env bash
@@ -201,6 +205,7 @@ process PREPARE_DECOY_REFERENCE {
     REF="${whole_ref}"
     BED="${numt_bed}"
     MT_CONTIG="${mt_contig}"
+    CONS_NUMT="${consensus_numt_fa}"
 
     echo "[INFO] Sample: ${meta.id}"
     echo "[INFO] Species: ${species_name}"
@@ -208,6 +213,7 @@ process PREPARE_DECOY_REFERENCE {
     echo "[INFO] Whole-genome reference: \${REF}"
     echo "[INFO] NUMT BED: \${BED}"
     echo "[INFO] mtDNA contig: \${MT_CONTIG}"
+    echo "[INFO] Consensus NUMT FASTA: \${CONS_NUMT:-not_set}"
 
     [[ -s "\${REF}" ]] || { echo "ERROR: Missing reference fasta: \${REF}" >&2; exit 1; }
     [[ -s "\${REF}.fai" ]] || { echo "ERROR: Missing reference fasta index: \${REF}.fai" >&2; exit 1; }
@@ -273,7 +279,7 @@ process PREPARE_DECOY_REFERENCE {
         exit 1
     }
 
-    # 6. Index decoy reference and prepare decoy-coordinate NUMT intervals.
+    # 7. Index decoy reference and prepare decoy-coordinate NUMT intervals.
     samtools faidx ${meta.id}.chrM_plus_numt.fa
     java -Xmx4G -jar "${params.picard_jar}" CreateSequenceDictionary \
         R=${meta.id}.chrM_plus_numt.fa \
