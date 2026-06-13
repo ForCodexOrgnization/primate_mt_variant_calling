@@ -986,25 +986,28 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
 
         # mtSwirl-like: after competitive mapping/preprocessing, keep reads mapping to chrM.
         # Do NOT require proper pair or mate-on-same-contig here.
-        # Reheader the output to chrM-only so downstream variant calling uses
-        # the consensus chrM reference, not the chrM+NUMT self-reference.
-        samtools view -H "\${SAMPLE_ID}.\${branch}.selfref.md.bam" | \
-          awk -v chr="\${chr_name}" 'BEGIN{OFS="\\t"}
-               /^@SQ/ {
-                 if (\$2=="SN:" chr) print;
-                 next
-               }
-               { print }' > "\${SAMPLE_ID}.\${branch}.chrM_only.header.sam"
-
-        samtools view -@ "\${THREADS}" -b -F 2308 \
+        # Emit a chrM-only BAM. In addition to dropping NUMT @SQ lines, normalize
+        # mate fields that still point to NUMT contigs; otherwise the BAM can carry
+        # mate reference IDs that are invalid under the chrM-only header and fail
+        # at indexing/variant-calling time.
+        samtools view -@ "\${THREADS}" -h -F 2308 \
             "\${SAMPLE_ID}.\${branch}.selfref.md.bam" \
             "\${chr_name}" \
-          > "\${SAMPLE_ID}.\${branch}.chrM_assigned.full_header.bam"
-
-        samtools reheader \
-            "\${SAMPLE_ID}.\${branch}.chrM_only.header.sam" \
-            "\${SAMPLE_ID}.\${branch}.chrM_assigned.full_header.bam" \
-          > "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
+          | awk -v chr="\${chr_name}" 'BEGIN{OFS="\\t"}
+              /^@SQ/ {
+                if (\$2=="SN:" chr) print;
+                next
+              }
+              /^@/ { print; next }
+              {
+                if (\$7 != "=" && \$7 != chr) {
+                  \$7="*";
+                  \$8=0;
+                  \$9=0;
+                }
+                print
+              }' \
+          | samtools view -@ "\${THREADS}" -b -o "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam" -
 
         samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
         samtools quickcheck -v "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
