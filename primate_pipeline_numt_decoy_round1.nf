@@ -35,6 +35,7 @@ CRAM search dirs:        ${params.cram_dirs}
 Whole-genome ref dir:    ${params.global_ref_dir}
 mt ref dir:              ${params.ref_dir}
 NUMT BED dir:            ${params.numt_bed_dir}
+Consensus NUMT dir:      ${params.consensus_numt_dir ?: 'not_set'}
 WDL Script:              ${params.wdl_script}
 ========================================
 """
@@ -191,6 +192,9 @@ process PREPARE_DECOY_REFERENCE {
     def whole_ref = "${params.global_ref_dir}/${ref_name}.fasta"
     def numt_bed  = "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
     def mt_contig = params.mt_contig ?: "chrM"
+    def consensus_numt_dir = params.consensus_numt_dir ?: ""
+    def consensus_numt_suffix = params.consensus_numt_suffix ?: ".consensus_numt.fa"
+    def consensus_numt_fa = consensus_numt_dir ? "${consensus_numt_dir}/${meta.id}${consensus_numt_suffix}" : ""
 
     """
     #!/usr/bin/env bash
@@ -199,6 +203,7 @@ process PREPARE_DECOY_REFERENCE {
     REF="${whole_ref}"
     BED="${numt_bed}"
     MT_CONTIG="${mt_contig}"
+    CONS_NUMT="${consensus_numt_fa}"
 
     echo "[INFO] Sample: ${meta.id}"
     echo "[INFO] Species: ${species_name}"
@@ -206,6 +211,7 @@ process PREPARE_DECOY_REFERENCE {
     echo "[INFO] Whole-genome reference: \${REF}"
     echo "[INFO] NUMT BED: \${BED}"
     echo "[INFO] mtDNA contig: \${MT_CONTIG}"
+    echo "[INFO] Consensus NUMT FASTA: \${CONS_NUMT:-not_set}"
 
     [[ -s "\${REF}" ]] || { echo "ERROR: Missing reference fasta: \${REF}" >&2; exit 1; }
     [[ -s "\${REF}.fai" ]] || { echo "ERROR: Missing reference fasta index: \${REF}.fai" >&2; exit 1; }
@@ -261,16 +267,44 @@ process PREPARE_DECOY_REFERENCE {
     echo "[INFO] Number of original NUMT contigs:"
     grep -c '^>' ${meta.id}.original_numt.fa || true
 
-    # 5. Build Round 1 decoy reference: original chrM + original NUMT.
-    #    If no valid NUMT intervals exist, numt_decoy.fa is empty and this becomes chrM-only.
-    cat chrM.fa numt_decoy.fa > ${meta.id}.chrM_plus_numt.fa
+    # 5. Optional consensus NUMT FASTA.
+    #    This must be appended to the round1 decoy reference if provided.
+    #    Headers are renamed to start with NUMT_CONSENSUS_ so they are included
+    #    in decoy_numt.interval_list by the /^NUMT_/ rule below.
+    if [[ -n "\${CONS_NUMT:-}" && -s "\${CONS_NUMT}" ]]; then
+        echo "[INFO] Adding consensus NUMT FASTA: \${CONS_NUMT}"
+
+        awk '
+          /^>/ {
+            h=\$0
+            sub(/^>/, "", h)
+            gsub(/[^A-Za-z0-9_.:-]/, "_", h)
+            print ">NUMT_CONSENSUS_" h
+            next
+          }
+          {
+            gsub(/[[:space:]]/, "", \$0)
+            if (length(\$0) > 0) print
+          }
+        ' "\${CONS_NUMT}" > consensus_numt.renamed.fa
+
+        consensus_n=\$(grep -c "^>" consensus_numt.renamed.fa || true)
+        echo "[INFO] Number of consensus NUMT contigs added: \${consensus_n}"
+    else
+        echo "[WARN] No consensus NUMT FASTA found or file is empty for ${meta.id}: \${CONS_NUMT:-not_set}"
+        : > consensus_numt.renamed.fa
+    fi
+
+    # 6. Build Round 1 decoy reference:
+    #    original chrM + original NUMT + optional consensus NUMT.
+    cat chrM.fa numt_decoy.fa consensus_numt.renamed.fa > ${meta.id}.chrM_plus_numt.fa
 
     [[ -s ${meta.id}.chrM_plus_numt.fa ]] || {
         echo "ERROR: Failed to create ${meta.id}.chrM_plus_numt.fa" >&2
         exit 1
     }
 
-    # 6. Index decoy reference and prepare decoy-coordinate NUMT intervals.
+    # 7. Index decoy reference and prepare decoy-coordinate NUMT intervals.
     samtools faidx ${meta.id}.chrM_plus_numt.fa
     java -Xmx4G -jar "${params.picard_jar}" CreateSequenceDictionary \
         R=${meta.id}.chrM_plus_numt.fa \
