@@ -788,8 +788,8 @@ PY_SELFREF
     index_fasta ${meta.id}.round2.selfref.fa ${meta.id}.round2.selfref.dict
     index_fasta ${meta.id}.round2.selfref.shifted.fa ${meta.id}.round2.selfref.shifted.dict
 
-    # 6) Rebuild interval lists so their sequence dictionaries match the combined self-references.
-    #    Intervals still target only chrM, but @SQ lines include chrM + NUMT contigs.
+    # 6) Rebuild interval lists so their sequence dictionaries match the chrM-only
+    #    consensus references used by downstream WDL variant calling.
     python3 - <<'PY_INTERVALS'
 from pathlib import Path
 
@@ -836,19 +836,19 @@ def write_interval(out_path, dict_path, contig, start, end):
 
 write_interval(
     f"{sample}.round2.consensus.non_control_region.interval_list",
-    f"{sample}.round2.selfref.dict",
+    f"{sample}.round2.consensus.dict",
     name,
     non_start,
     non_end,
 )
 write_interval(
     f"{sample}.round2.consensus.control_region_shifted.interval_list",
-    f"{sample}.round2.selfref.shifted.dict",
+    f"{sample}.round2.consensus.shifted.dict",
     name,
     control_start,
     control_end,
 )
-print(f"[INFO] Rewrote interval lists with combined self-reference dictionaries; padding={P}")
+print(f"[INFO] Rewrote interval lists with chrM-only consensus dictionaries; padding={P}")
 PY_INTERVALS
 
     # 7) Basic sanity checks for all WDL reference files generated here.
@@ -1001,6 +1001,10 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
               /^@/ { print; next }
               {
                 if (\$7 != "=" && \$7 != chr) {
+                  flag=\$2 + 0;
+                  if (int(flag / 2) % 2 == 1) flag -= 2;
+                  if (int(flag / 8) % 2 == 0) flag += 8;
+                  \$2=flag;
                   \$7="*";
                   \$8=0;
                   \$9=0;
