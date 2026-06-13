@@ -278,7 +278,7 @@ process FIND_ROUND1_OUTPUTS {
         if [[ -d "\${NUMT_VCF_ROOT}" ]]; then
             find "\${NUMT_VCF_ROOT}" \
                 -type f \
-                \( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \) \
+                \\( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \\) \
                 | sort
         fi
     )
@@ -297,7 +297,7 @@ process FIND_ROUND1_OUTPUTS {
             nuc_vcf="\$(
                 find "\${NUMT_VCF_ROOT}" \
                     -type f \
-                    \( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \) \
+                    \\( -name "\${SAMPLE_ID}${params.round1_nuc_vcf_suffix}" -o -name "*${params.round1_nuc_vcf_suffix}" \\) \
                     -printf '%T@\t%p\n' \
                 | sort -k1,1nr \
                 | head -n 1 \
@@ -584,9 +584,9 @@ def open_text(path):
 
 
 def write_wrapped(handle, seq, width=60):
-    seq = seq.replace(" ", "").replace("\t", "").upper()
+    seq = seq.replace(" ", "").replace("\\t", "").upper()
     for i in range(0, len(seq), width):
-        handle.write(seq[i:i+width] + "\n")
+        handle.write(seq[i:i+width] + "\\n")
 
 
 def read_fasta_records(path):
@@ -595,7 +595,7 @@ def read_fasta_records(path):
     seq_parts = []
     with Path(path).open() as handle:
         for line in handle:
-            line = line.rstrip("\n")
+            line = line.rstrip("\\n")
             if not line:
                 continue
             if line.startswith(">"):
@@ -635,7 +635,7 @@ def read_vcf_records(path):
         for line in handle:
             if not line or line.startswith("#"):
                 continue
-            fields = line.rstrip("\n").split("\t")
+            fields = line.rstrip("\\n").split("\\t")
             if len(fields) < 8:
                 continue
             chrom, pos_s, _id, ref, alt, qual, filt, info = fields[:8]
@@ -707,7 +707,7 @@ def build_consensus_numt(original_fa, nuc_vcf, out_fa):
             else:
                 print(f"[WARN] Cannot parse NUMT FASTA header; leaving sequence unchanged: {header}", file=sys.stderr)
 
-            out.write(f">{header}\n")
+            out.write(f">{header}\\n")
             write_wrapped(out, "".join(seq_list))
             applied_total += applied
     print(f"[INFO] Wrote consensus NUMT FASTA: {out_fa} (records={len(records)}, applied_variants={applied_total})")
@@ -731,7 +731,7 @@ def append_sanitized_numts(out_handle, numt_fa):
             clean = f"NUMT_{n+1}_{clean}"
         seen.add(clean)
         if seq:
-            out_handle.write(f">{clean} consensus_NUMT source={raw_name}\n")
+            out_handle.write(f">{clean} consensus_NUMT source={raw_name}\\n")
             write_wrapped(out_handle, seq)
             n += 1
     print(f"[INFO] Appended {n} consensus NUMT contigs from {numt_fa}")
@@ -744,8 +744,8 @@ for chr_fa, self_fa in [(standard_chrM, standard_selfref), (shifted_chrM, shifte
     chr_text = chr_fa.read_text()
     with self_fa.open("w") as out:
         out.write(chr_text)
-        if not chr_text.endswith("\n"):
-            out.write("\n")
+        if not chr_text.endswith("\\n"):
+            out.write("\\n")
         append_sanitized_numts(out, consensus_numt)
 
 PY_SELFREF
