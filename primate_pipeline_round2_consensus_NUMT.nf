@@ -35,6 +35,8 @@ params.round2_final_vcf_suffix = params.round2_final_vcf_suffix ?: '.round2.cons
 //   <round1_outdir>/<sample_id>/<round1_numt_subdir>/<sample_id><round1_numt_suffix>
 params.round1_numt_subdir = params.round1_numt_subdir ?: 'numt_decoy_ref'
 params.round1_numt_suffix = params.round1_numt_suffix ?: '.original_numt.fa'
+params.round1_consensus_numt_subdir = params.round1_consensus_numt_subdir ?: 'consensus_numt_ref'
+params.round1_consensus_numt_suffix = params.round1_consensus_numt_suffix ?: '.consensus_numt.fa'
 // Round1 decoy-coordinate NUMT VCF published by CALL_NUMT_VARIANTS_DECOY.
 // Expected path by default:
 //   <round1_outdir>/<sample_id>/round_1/<round1_numt_vcf_subdir>/<sample_id><round1_nuc_vcf_suffix>
@@ -54,6 +56,8 @@ Consensus filter expr:  ${params.consensus_filter_expr}
 mt ref dir:             ${params.ref_dir}
 Round1 NUMT subdir:     ${params.round1_numt_subdir}
 Round1 NUMT suffix:     ${params.round1_numt_suffix}
+Round1 consensus NUMT subdir: ${params.round1_consensus_numt_subdir}
+Round1 consensus NUMT suffix: ${params.round1_consensus_numt_suffix}
 Round1 NUMT VCF subdir: ${params.round1_numt_vcf_subdir}
 Round1 NUMT VCF suffix: ${params.round1_nuc_vcf_suffix}
 Strict NUMT ref:        ${params.strict_numt_ref}
@@ -152,7 +156,9 @@ process FIND_ROUND1_OUTPUTS {
     BAM_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_bam_subdir}"
     VCF_ROOT="\${SAMPLE_DIR}/${params.round1_vcf_subdir}"
     NUMT_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_numt_subdir}"
+    CONSENSUS_NUMT_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_consensus_numt_subdir}"
     NUMT_VCF_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_numt_vcf_subdir}"
+    USE_PRECOMPUTED_CONSENSUS_NUMT=false
 
     [[ -d "\${SAMPLE_DIR}" ]] || {
         echo "ERROR: Missing round1 sample directory: \${SAMPLE_DIR}" >&2
@@ -216,6 +222,23 @@ process FIND_ROUND1_OUTPUTS {
         ln -sf "\${numt_fai}" "\${SAMPLE_ID}.round1.original_numt.fa.fai"
     fi
 
+    consensus_numt_fa="\${CONSENSUS_NUMT_ROOT}/\${SAMPLE_ID}${params.round1_consensus_numt_suffix}"
+    consensus_numt_fai="\${consensus_numt_fa}.fai"
+    if [[ -s "\${consensus_numt_fa}" ]]; then
+        echo "[INFO] Using precomputed Round 1 consensus NUMT FASTA: \${consensus_numt_fa}" >&2
+        rm -f "\${SAMPLE_ID}.round1.original_numt.fa" "\${SAMPLE_ID}.round1.original_numt.fa.fai"
+        ln -sf "\${consensus_numt_fa}" "\${SAMPLE_ID}.round1.original_numt.fa"
+        if [[ -s "\${consensus_numt_fai}" ]]; then
+            ln -sf "\${consensus_numt_fai}" "\${SAMPLE_ID}.round1.original_numt.fa.fai"
+        else
+            echo "[WARN] Missing consensus NUMT FASTA index; creating a local index for \${consensus_numt_fa}" >&2
+            rm -f "\${SAMPLE_ID}.round1.original_numt.fa"
+            cp "\${consensus_numt_fa}" "\${SAMPLE_ID}.round1.original_numt.fa"
+            samtools faidx "\${SAMPLE_ID}.round1.original_numt.fa"
+        fi
+        USE_PRECOMPUTED_CONSENSUS_NUMT=true
+    fi
+
     ########################################
     # 3) Recursively find exact round1 split VCF
     #    If multiple Cromwell runs exist, select the newest file by modification time.
@@ -274,6 +297,14 @@ process FIND_ROUND1_OUTPUTS {
     #    This is produced by CALL_NUMT_VARIANTS_DECOY under round_1/numt_decoy_variant_calling.
     #    If older Round 1 outputs do not have it, keep original NUMTs by creating a valid empty VCF.
     ########################################
+    if [[ "\${USE_PRECOMPUTED_CONSENSUS_NUMT}" == "true" ]]; then
+        echo "[INFO] Precomputed consensus NUMT FASTA is already selected; using an empty NUMT VCF to avoid applying variants twice" >&2
+        {
+          echo '##fileformat=VCFv4.2'
+          echo -e '#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO'
+        } | bgzip -c > "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+        tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
+    else
     mapfile -t nuc_vcf_hits < <(
         if [[ -d "\${NUMT_VCF_ROOT}" ]]; then
             find "\${NUMT_VCF_ROOT}" \
@@ -320,6 +351,7 @@ process FIND_ROUND1_OUTPUTS {
             bgzip -c "\${nuc_vcf}" > "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
             tabix -p vcf -f "\${SAMPLE_ID}.round1.nuc.input.vcf.gz"
         fi
+    fi
     fi
 
     ########################################
@@ -954,10 +986,28 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
 
         # mtSwirl-like: after competitive mapping/preprocessing, keep reads mapping to chrM.
         # Do NOT require proper pair or mate-on-same-contig here.
-        samtools view -@ "\${THREADS}" -b -F 2308 \
+        # Emit a chrM-only BAM. In addition to dropping NUMT @SQ lines, normalize
+        # mate fields that still point to NUMT contigs; otherwise the BAM can carry
+        # mate reference IDs that are invalid under the chrM-only header and fail
+        # at indexing/variant-calling time.
+        samtools view -@ "\${THREADS}" -h -F 2308 \
             "\${SAMPLE_ID}.\${branch}.selfref.md.bam" \
             "\${chr_name}" \
-          > "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
+          | awk -v chr="\${chr_name}" 'BEGIN{OFS="\\t"}
+              /^@SQ/ {
+                if (\$2=="SN:" chr) print;
+                next
+              }
+              /^@/ { print; next }
+              {
+                if (\$7 != "=" && \$7 != chr) {
+                  \$7="*";
+                  \$8=0;
+                  \$9=0;
+                }
+                print
+              }' \
+          | samtools view -@ "\${THREADS}" -b -o "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam" -
 
         samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
         samtools quickcheck -v "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
@@ -1027,27 +1077,27 @@ process GENERATE_WDL_JSON_ROUND2 {
   "MitochondriaMultiSamplePipeline.compress_output_vcf": true,
   "MitochondriaMultiSamplePipeline.inputSamplesFile": "\$(readlink -f ${cram_tsv})",
 
-  "MitochondriaMultiSamplePipeline.ref_fasta": "\$(readlink -f ${selfref_fa})",
-  "MitochondriaMultiSamplePipeline.ref_fasta_index": "\$(readlink -f ${selfref_fai})",
-  "MitochondriaMultiSamplePipeline.ref_dict": "\$(readlink -f ${selfref_dict})",
+  "MitochondriaMultiSamplePipeline.ref_fasta": "\$(readlink -f ${consensus_fa})",
+  "MitochondriaMultiSamplePipeline.ref_fasta_index": "\$(readlink -f ${consensus_fai})",
+  "MitochondriaMultiSamplePipeline.ref_dict": "\$(readlink -f ${consensus_dict})",
 
-  "MitochondriaMultiSamplePipeline.mt_dict": "\$(readlink -f ${selfref_dict})",
-  "MitochondriaMultiSamplePipeline.mt_fasta": "\$(readlink -f ${selfref_fa})",
-  "MitochondriaMultiSamplePipeline.mt_fasta_index": "\$(readlink -f ${selfref_fai})",
-  "MitochondriaMultiSamplePipeline.mt_amb": "\$(readlink -f ${selfref_amb})",
-  "MitochondriaMultiSamplePipeline.mt_ann": "\$(readlink -f ${selfref_ann})",
-  "MitochondriaMultiSamplePipeline.mt_bwt": "\$(readlink -f ${selfref_bwt})",
-  "MitochondriaMultiSamplePipeline.mt_pac": "\$(readlink -f ${selfref_pac})",
-  "MitochondriaMultiSamplePipeline.mt_sa": "\$(readlink -f ${selfref_sa})",
+  "MitochondriaMultiSamplePipeline.mt_dict": "\$(readlink -f ${consensus_dict})",
+  "MitochondriaMultiSamplePipeline.mt_fasta": "\$(readlink -f ${consensus_fa})",
+  "MitochondriaMultiSamplePipeline.mt_fasta_index": "\$(readlink -f ${consensus_fai})",
+  "MitochondriaMultiSamplePipeline.mt_amb": "\$(readlink -f ${consensus_amb})",
+  "MitochondriaMultiSamplePipeline.mt_ann": "\$(readlink -f ${consensus_ann})",
+  "MitochondriaMultiSamplePipeline.mt_bwt": "\$(readlink -f ${consensus_bwt})",
+  "MitochondriaMultiSamplePipeline.mt_pac": "\$(readlink -f ${consensus_pac})",
+  "MitochondriaMultiSamplePipeline.mt_sa": "\$(readlink -f ${consensus_sa})",
 
-  "MitochondriaMultiSamplePipeline.mt_shifted_dict": "\$(readlink -f ${selfref_shifted_dict})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "\$(readlink -f ${selfref_shifted_fa})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "\$(readlink -f ${selfref_shifted_fai})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "\$(readlink -f ${selfref_shifted_amb})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "\$(readlink -f ${selfref_shifted_ann})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "\$(readlink -f ${selfref_shifted_bwt})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "\$(readlink -f ${selfref_shifted_pac})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "\$(readlink -f ${selfref_shifted_sa})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_dict": "\$(readlink -f ${shifted_dict})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "\$(readlink -f ${shifted_fa})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "\$(readlink -f ${shifted_fai})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "\$(readlink -f ${shifted_amb})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "\$(readlink -f ${shifted_ann})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "\$(readlink -f ${shifted_bwt})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "\$(readlink -f ${shifted_pac})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "\$(readlink -f ${shifted_sa})",
 
   "MitochondriaMultiSamplePipeline.shift_back_chain": "\$(readlink -f ${shift_back_chain})",
   "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "\$(readlink -f ${non_control_interval})",
