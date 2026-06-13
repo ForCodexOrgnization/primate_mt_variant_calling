@@ -82,6 +82,8 @@ workflow {
 
     ch_numt_call_input = REALIGN_TO_DECOY.out.realign_bam.join(PREPARE_DECOY_REFERENCE.out.decoy_ref_for_numt_calling, by: [0,1,2])
     CALL_NUMT_VARIANTS_DECOY(ch_numt_call_input)
+    ch_consensus_numt_input = PREPARE_DECOY_REFERENCE.out.original_numt_fa.join(CALL_NUMT_VARIANTS_DECOY.out.numt_vcf, by: [0,1,2])
+    GENERATE_CONSENSUS_NUMT_FASTA(ch_consensus_numt_input)
 
     EXTRACT_FINAL_CHRM_BAM(REALIGN_TO_DECOY.out.realign_bam)
 
@@ -262,6 +264,7 @@ process PREPARE_DECOY_REFERENCE {
     grep -c '^>' ${meta.id}.original_numt.fa || true
 
     # 5. Build Round 1 decoy reference: original chrM + original NUMT.
+    #    Consensus NUMT is generated later, after CALL_NUMT_VARIANTS_DECOY.
     #    If no valid NUMT intervals exist, numt_decoy.fa is empty and this becomes chrM-only.
     cat chrM.fa numt_decoy.fa > ${meta.id}.chrM_plus_numt.fa
 
@@ -570,6 +573,140 @@ PY_EMPTY_VCF
           -I ${meta.id}.numt_decoy.raw.vcf.gz
     fi
     [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: missing HaplotypeCaller VCF index: ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+    """
+}
+
+process GENERATE_CONSENSUS_NUMT_FASTA {
+    tag { "Generate consensus NUMT FASTA for ${meta.id}" }
+    label 'generation_related'
+    publishDir "${params.outdir}/${meta.id}/round_1/consensus_numt_ref", mode: 'copy'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name),
+          path(original_numt_fa), path(original_numt_fai),
+          path(numt_vcf), path(numt_vcf_tbi)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.consensus_numt.fa"),
+          path("${meta.id}.consensus_numt.fa.fai"),
+          emit: consensus_numt_fa
+
+    script:
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    python3 - <<'PY_CONSENSUS_NUMT'
+from pathlib import Path
+import gzip
+import sys
+
+sample = "${meta.id}"
+original_fa = Path("${original_numt_fa}")
+numt_vcf = Path("${numt_vcf}")
+out_fa = Path(f"{sample}.consensus_numt.fa")
+
+def open_text(path):
+    path = Path(path)
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt")
+    return path.open("rt")
+
+def read_fasta(path):
+    records = []
+    header = None
+    seq_parts = []
+    with Path(path).open() as handle:
+        for line in handle:
+            line = line.rstrip("\\n")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header is not None:
+                    records.append((header, "".join(seq_parts).upper()))
+                header = line[1:].strip()
+                seq_parts = []
+            else:
+                seq_parts.append(line.strip())
+        if header is not None:
+            records.append((header, "".join(seq_parts).upper()))
+    return records
+
+def write_wrapped(handle, seq, width=60):
+    for i in range(0, len(seq), width):
+        handle.write(seq[i:i + width] + "\\n")
+
+def read_vcf_variants(path):
+    variants = {}
+    if not path.exists() or path.stat().st_size == 0:
+        return variants
+    with open_text(path) as handle:
+        for line in handle:
+            if not line or line.startswith("#"):
+                continue
+            fields = line.rstrip("\\n").split("\\t")
+            if len(fields) < 8:
+                continue
+            chrom, pos_s, _id, ref, alt, _qual, filt, _info = fields[:8]
+            if filt not in ("PASS", "."):
+                continue
+            if "," in alt or alt in (".", "*") or alt.startswith("<"):
+                continue
+            try:
+                pos = int(pos_s)
+            except ValueError:
+                continue
+            variants.setdefault(chrom, []).append((pos, ref.upper(), alt.upper()))
+    for chrom in variants:
+        variants[chrom].sort(key=lambda item: item[0])
+    return variants
+
+if not original_fa.exists():
+    raise SystemExit(f"ERROR: missing original NUMT FASTA: {original_fa}")
+
+if original_fa.stat().st_size == 0:
+    print(f"[INFO] Original NUMT FASTA is empty for {sample}; writing empty consensus FASTA", file=sys.stderr)
+    out_fa.write_text("")
+    raise SystemExit(0)
+
+records = read_fasta(original_fa)
+variants = read_vcf_variants(numt_vcf)
+applied_total = 0
+
+with out_fa.open("w") as out:
+    for header, seq in records:
+        contig = header.split()[0]
+        seq_list = list(seq)
+        offset = 0
+        last_ref_end = 0
+        applied = 0
+        for pos, ref, alt in variants.get(contig, []):
+            ref_end = pos + len(ref) - 1
+            if pos <= last_ref_end:
+                print(f"[WARN] Skipping overlapping NUMT variant {contig}:{pos} {ref}>{alt}", file=sys.stderr)
+                continue
+            local0 = pos - 1 + offset
+            observed = "".join(seq_list[local0:local0 + len(ref)]).upper()
+            if observed != ref:
+                print(f"[WARN] Skipping NUMT variant {contig}:{pos} {ref}>{alt}: observed {observed}", file=sys.stderr)
+                continue
+            seq_list[local0:local0 + len(ref)] = list(alt)
+            offset += len(alt) - len(ref)
+            last_ref_end = ref_end
+            applied += 1
+        out.write(f">{header}\\n")
+        write_wrapped(out, "".join(seq_list))
+        applied_total += applied
+
+print(f"[INFO] Wrote consensus NUMT FASTA: {out_fa} (records={len(records)}, applied_variants={applied_total})")
+PY_CONSENSUS_NUMT
+
+    if [[ -s ${meta.id}.consensus_numt.fa ]]; then
+        samtools faidx ${meta.id}.consensus_numt.fa
+    else
+        : > ${meta.id}.consensus_numt.fa.fai
+    fi
     """
 }
 
