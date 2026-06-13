@@ -986,9 +986,24 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
 
         # mtSwirl-like: after competitive mapping/preprocessing, keep reads mapping to chrM.
         # Do NOT require proper pair or mate-on-same-contig here.
+        # Reheader the output to chrM-only so downstream variant calling uses
+        # the consensus chrM reference, not the chrM+NUMT self-reference.
+        samtools view -H "\${SAMPLE_ID}.\${branch}.selfref.md.bam" | \
+          awk -v chr="\${chr_name}" 'BEGIN{OFS="\\t"}
+               /^@SQ/ {
+                 if (\$2=="SN:" chr) print;
+                 next
+               }
+               { print }' > "\${SAMPLE_ID}.\${branch}.chrM_only.header.sam"
+
         samtools view -@ "\${THREADS}" -b -F 2308 \
             "\${SAMPLE_ID}.\${branch}.selfref.md.bam" \
             "\${chr_name}" \
+          > "\${SAMPLE_ID}.\${branch}.chrM_assigned.full_header.bam"
+
+        samtools reheader \
+            "\${SAMPLE_ID}.\${branch}.chrM_only.header.sam" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assigned.full_header.bam" \
           > "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
 
         samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
@@ -1059,27 +1074,27 @@ process GENERATE_WDL_JSON_ROUND2 {
   "MitochondriaMultiSamplePipeline.compress_output_vcf": true,
   "MitochondriaMultiSamplePipeline.inputSamplesFile": "\$(readlink -f ${cram_tsv})",
 
-  "MitochondriaMultiSamplePipeline.ref_fasta": "\$(readlink -f ${selfref_fa})",
-  "MitochondriaMultiSamplePipeline.ref_fasta_index": "\$(readlink -f ${selfref_fai})",
-  "MitochondriaMultiSamplePipeline.ref_dict": "\$(readlink -f ${selfref_dict})",
+  "MitochondriaMultiSamplePipeline.ref_fasta": "\$(readlink -f ${consensus_fa})",
+  "MitochondriaMultiSamplePipeline.ref_fasta_index": "\$(readlink -f ${consensus_fai})",
+  "MitochondriaMultiSamplePipeline.ref_dict": "\$(readlink -f ${consensus_dict})",
 
-  "MitochondriaMultiSamplePipeline.mt_dict": "\$(readlink -f ${selfref_dict})",
-  "MitochondriaMultiSamplePipeline.mt_fasta": "\$(readlink -f ${selfref_fa})",
-  "MitochondriaMultiSamplePipeline.mt_fasta_index": "\$(readlink -f ${selfref_fai})",
-  "MitochondriaMultiSamplePipeline.mt_amb": "\$(readlink -f ${selfref_amb})",
-  "MitochondriaMultiSamplePipeline.mt_ann": "\$(readlink -f ${selfref_ann})",
-  "MitochondriaMultiSamplePipeline.mt_bwt": "\$(readlink -f ${selfref_bwt})",
-  "MitochondriaMultiSamplePipeline.mt_pac": "\$(readlink -f ${selfref_pac})",
-  "MitochondriaMultiSamplePipeline.mt_sa": "\$(readlink -f ${selfref_sa})",
+  "MitochondriaMultiSamplePipeline.mt_dict": "\$(readlink -f ${consensus_dict})",
+  "MitochondriaMultiSamplePipeline.mt_fasta": "\$(readlink -f ${consensus_fa})",
+  "MitochondriaMultiSamplePipeline.mt_fasta_index": "\$(readlink -f ${consensus_fai})",
+  "MitochondriaMultiSamplePipeline.mt_amb": "\$(readlink -f ${consensus_amb})",
+  "MitochondriaMultiSamplePipeline.mt_ann": "\$(readlink -f ${consensus_ann})",
+  "MitochondriaMultiSamplePipeline.mt_bwt": "\$(readlink -f ${consensus_bwt})",
+  "MitochondriaMultiSamplePipeline.mt_pac": "\$(readlink -f ${consensus_pac})",
+  "MitochondriaMultiSamplePipeline.mt_sa": "\$(readlink -f ${consensus_sa})",
 
-  "MitochondriaMultiSamplePipeline.mt_shifted_dict": "\$(readlink -f ${selfref_shifted_dict})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "\$(readlink -f ${selfref_shifted_fa})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "\$(readlink -f ${selfref_shifted_fai})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "\$(readlink -f ${selfref_shifted_amb})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "\$(readlink -f ${selfref_shifted_ann})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "\$(readlink -f ${selfref_shifted_bwt})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "\$(readlink -f ${selfref_shifted_pac})",
-  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "\$(readlink -f ${selfref_shifted_sa})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_dict": "\$(readlink -f ${shifted_dict})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "\$(readlink -f ${shifted_fa})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "\$(readlink -f ${shifted_fai})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "\$(readlink -f ${shifted_amb})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "\$(readlink -f ${shifted_ann})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "\$(readlink -f ${shifted_bwt})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "\$(readlink -f ${shifted_pac})",
+  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "\$(readlink -f ${shifted_sa})",
 
   "MitochondriaMultiSamplePipeline.shift_back_chain": "\$(readlink -f ${shift_back_chain})",
   "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "\$(readlink -f ${non_control_interval})",
