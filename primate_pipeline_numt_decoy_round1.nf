@@ -154,6 +154,8 @@ process LOCATE_CRAM {
     """
 }
 
+
+
 process PREPARE_DECOY_REFERENCE {
     tag { "Prepare decoy ref for ${meta.id}" }
     label 'alignment_related'
