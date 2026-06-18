@@ -105,6 +105,8 @@ workflow {
     BUILD_CONSENSUS_REFERENCE(ch_vcf_inputs)
     ch_bam_consensus = ch_bam_inputs.join(BUILD_CONSENSUS_REFERENCE.out.consensus_ref, by: [0,1,2])
     REALIGN_TO_CONSENSUS_ASSIGNED_BAMS(ch_bam_consensus)
+    ch_mtcn_inputs = REALIGN_TO_CONSENSUS_ASSIGNED_BAMS.out.assigned_bams.join(BUILD_CONSENSUS_REFERENCE.out.consensus_ref, by: [0,1,2])
+    CALCULATE_ROUND2_MTCN(ch_mtcn_inputs)
     GENERATE_BAM_TSV(REALIGN_TO_CONSENSUS_ASSIGNED_BAMS.out.assigned_bams)
     ch_json_inputs = GENERATE_BAM_TSV.out.tsv.join(BUILD_CONSENSUS_REFERENCE.out.consensus_ref, by: [0,1,2])
     GENERATE_WDL_JSON_ROUND2(ch_json_inputs)
@@ -1021,6 +1023,117 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
     align_branch "shifted"  "${selfref_shifted_fa}" "\${CHR_NAME}"
 
     echo "[INFO] Finished mtSwirl-like preassigned BAMs for \${SAMPLE_ID}"
+    """
+}
+
+
+process CALCULATE_ROUND2_MTCN {
+    tag { "Calculate round2 mtCN for ${meta.id}" }
+    label 'alignment_related'
+    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.round2.mtcn.tsv"
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name),
+          path(std_bam), path(std_bai), path(shift_bam), path(shift_bai),
+          path(consensus_fa), path(consensus_fai), path(consensus_dict),
+          path(consensus_amb), path(consensus_ann), path(consensus_bwt), path(consensus_pac), path(consensus_sa),
+          path(shifted_fa), path(shifted_fai), path(shifted_dict),
+          path(shifted_amb), path(shifted_ann), path(shifted_bwt), path(shifted_pac), path(shifted_sa),
+          path(selfref_fa), path(selfref_fai), path(selfref_dict),
+          path(selfref_amb), path(selfref_ann), path(selfref_bwt), path(selfref_pac), path(selfref_sa),
+          path(selfref_shifted_fa), path(selfref_shifted_fai), path(selfref_shifted_dict),
+          path(selfref_shifted_amb), path(selfref_shifted_ann), path(selfref_shifted_bwt), path(selfref_shifted_pac), path(selfref_shifted_sa),
+          path(non_control_interval), path(control_shifted_interval), path(shift_back_chain),
+          path(consensus_sites_vcf), path(consensus_sites_tbi)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.round2.mtcn.tsv"), emit: mtcn
+
+    script:
+    def mt_contig = params.mt_contig ?: "chrM"
+    def whole_ref = "${params.global_ref_dir}/${ref_name}.fasta"
+    def configuredCramDirs = (params.cram_dirs instanceof List ? params.cram_dirs : params.cram_dirs.toString().split(','))*.trim().findAll { it }
+    def cramDirs = (configuredCramDirs + [params.round1_outdir?.toString()]).findAll { it }.unique()
+    def cramDirsBash = cramDirs.collect { '"' + it + '"' }.join(' ')
+    def mosdepthBin = params.mosdepth_bin ?: "mosdepth"
+    """
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    SAMPLE_ID="${meta.id}"
+    REF="${whole_ref}"
+    MT_CONTIG="${mt_contig}"
+    MOSDEPTH_BIN="${mosdepthBin}"
+    THREADS=${task.cpus ?: 4}
+
+    [[ -s "\${REF}" ]] || { echo "ERROR: Missing whole-genome reference: \${REF}" >&2; exit 1; }
+    [[ -s "\${REF}.fai" ]] || { echo "ERROR: Missing whole-genome reference index: \${REF}.fai" >&2; exit 1; }
+    command -v "\${MOSDEPTH_BIN}" >/dev/null 2>&1 || { echo "ERROR: mosdepth executable not found: \${MOSDEPTH_BIN}" >&2; exit 1; }
+
+    found_cram=""
+    found_crai=""
+    for d in ${cramDirsBash}; do
+      cand_cram="\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram"
+      cand_crai="\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram.crai"
+      if [[ -s "\${cand_cram}" && -s "\${cand_crai}" ]]; then
+        found_cram="\${cand_cram}"
+        found_crai="\${cand_crai}"
+        break
+      fi
+    done
+    [[ -n "\${found_cram}" ]] || { echo "ERROR: CRAM/CRAI not found for \${SAMPLE_ID} in --cram_dirs or --round1_outdir" >&2; exit 1; }
+
+    awk -v mt="\${MT_CONTIG}" 'BEGIN{OFS="\t"} \$1!=mt {print \$1,0,\$2,"nuclear"}' "\${REF}.fai" > "\${SAMPLE_ID}.round2.nuclear_contigs.bed"
+    [[ -s "\${SAMPLE_ID}.round2.nuclear_contigs.bed" ]] || { echo "ERROR: no nuclear contigs found after excluding \${MT_CONTIG}" >&2; exit 1; }
+
+    "\${MOSDEPTH_BIN}" \
+      --threads "\${THREADS}" \
+      --fasta "\${REF}" \
+      --by "\${SAMPLE_ID}.round2.nuclear_contigs.bed" \
+      "\${SAMPLE_ID}.round2.nuclear" \
+      "\${found_cram}"
+
+    samtools depth -a ${std_bam} > "\${SAMPLE_ID}.round2.standard.chrM.depth.tsv"
+
+    python3 - <<'PY_MTCN'
+import gzip
+import math
+from pathlib import Path
+sample = "${meta.id}"
+nuc_regions = Path(f"{sample}.round2.nuclear.regions.bed.gz")
+mt_depth = Path(f"{sample}.round2.standard.chrM.depth.tsv")
+out = Path(f"{sample}.round2.mtcn.tsv")
+nuc_bases = 0
+nuc_cov_bases = 0.0
+with gzip.open(nuc_regions, "rt") as fh:
+    for line in fh:
+        if not line.strip() or line.startswith("#"):
+            continue
+        chrom, start, end, label, mean = line.rstrip("\\n").split("\\t")[:5]
+        length = int(end) - int(start)
+        cov = float(mean)
+        nuc_bases += length
+        nuc_cov_bases += cov * length
+mt_bases = 0
+mt_cov_bases = 0.0
+with mt_depth.open() as fh:
+    for line in fh:
+        if not line.strip():
+            continue
+        fields = line.rstrip("\\n").split("\\t")
+        mt_bases += 1
+        mt_cov_bases += float(fields[2])
+if mt_bases <= 0:
+    raise SystemExit("ERROR: no mt positions found in round2 standard chrM BAM depth")
+if nuc_bases <= 0:
+    raise SystemExit("ERROR: no nuclear coverage rows found in mosdepth output")
+mt_cov = mt_cov_bases / mt_bases
+nuc_cov = nuc_cov_bases / nuc_bases
+mtcn = (2.0 * mt_cov / nuc_cov) if nuc_cov > 0 else math.nan
+with out.open("w") as fh:
+    fh.write("sample\\tspecies\\tref_name\\tmt_contig\\tmt_coverage_source\\tnuclear_coverage_source\\tmt_mean_coverage\\tnuclear_mean_coverage\\tmtcn\\tformula\\n")
+    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_non_mt_contigs\\t{mt_cov:.6f}\\t{nuc_cov:.6f}\\t{mtcn:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\n")
+PY_MTCN
     """
 }
 
