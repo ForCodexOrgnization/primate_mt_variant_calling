@@ -1109,7 +1109,7 @@ with gzip.open(nuc_regions, "rt") as fh:
     for line in fh:
         if not line.strip() or line.startswith("#"):
             continue
-        chrom, start, end, label, mean = line.rstrip("\n").split("\t")[:5]
+        chrom, start, end, label, mean = line.rstrip("\\n").split("\\t")[:5]
         length = int(end) - int(start)
         cov = float(mean)
         nuc_bases += length
@@ -1120,7 +1120,7 @@ with mt_depth.open() as fh:
     for line in fh:
         if not line.strip():
             continue
-        fields = line.rstrip("\n").split("\t")
+        fields = line.rstrip("\\n").split("\\t")
         mt_bases += 1
         mt_cov_bases += float(fields[2])
 if mt_bases <= 0:
@@ -1131,8 +1131,8 @@ mt_cov = mt_cov_bases / mt_bases
 nuc_cov = nuc_cov_bases / nuc_bases
 mtcn = (2.0 * mt_cov / nuc_cov) if nuc_cov > 0 else math.nan
 with out.open("w") as fh:
-    fh.write("sample\tspecies\tref_name\tmt_contig\tmt_coverage_source\tnuclear_coverage_source\tmt_mean_coverage\tnuclear_mean_coverage\tmtcn\tformula\n")
-    fh.write(f"{sample}\t${species_name}\t${ref_name}\t${mt_contig}\tround2_standard_chrM_assigned_bam\twgs_cram_mosdepth_non_mt_contigs\t{mt_cov:.6f}\t{nuc_cov:.6f}\t{mtcn:.6f}\t2*mt_mean_coverage/nuclear_mean_coverage\n")
+    fh.write("sample\\tspecies\\tref_name\\tmt_contig\\tmt_coverage_source\\tnuclear_coverage_source\\tmt_mean_coverage\\tnuclear_mean_coverage\\tmtcn\\tformula\\n")
+    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_non_mt_contigs\\t{mt_cov:.6f}\\t{nuc_cov:.6f}\\t{mtcn:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\n")
 PY_MTCN
     """
 }
