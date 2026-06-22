@@ -8,11 +8,11 @@
 set -euo pipefail
 
 # --- 用户配置区 ---
-FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/project_pi_njl27/lt692/primate_mito_calling/mcc_sample.txt}"
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primate_mt_variant_calling/human_sample.txt}"
 BATCH_SIZE="${BATCH_SIZE:-5}"
 CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
-NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/home/lt692/scratch_pi_njl27/lt692/nf_work_dir_pre}"
-OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/project/pi_njl27/lt692/primate_results}"
+NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_round1}"
+OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 CRAM_DIRS="${CRAM_DIRS:-${OUTPUT_DIR}}"
 
 module load Nextflow/24.10.2
