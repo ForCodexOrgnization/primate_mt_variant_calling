@@ -31,7 +31,14 @@ POLL_SECONDS="${POLL_SECONDS:-120}"
 LOG_DIR="${LOG_DIR:-log_all}"
 mkdir -p "${LOG_DIR}"
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When this coordinator is submitted with sbatch, Slurm may execute a spool copy of
+# the script. Prefer the original submission directory so relative launch script paths
+# still resolve to the repository checkout that contains launch_pipeline_pre.sh, etc.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
+    repo_dir="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+else
+    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 cd "${repo_dir}"
 
 log() {

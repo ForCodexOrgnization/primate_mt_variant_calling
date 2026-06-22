@@ -107,11 +107,27 @@ process DOWNLOAD_FASTQ {
     acc="${meta.id}"
 
     # 1. 获取 Run IDs
-    url_report="\${ena_base}/filereport?accession=\${acc}&result=read_run&fields=run_accession,fastq_ftp,fastq_md5&format=tsv"
-    curl -fsSL "\$url_report" -o report.tsv
-    
+    # ENA filereport accepts INSDC accessions, but some sample sheets use aliases
+    # such as HG00119. If filereport returns HTTP 400, fall back to the Portal
+    # advanced search API and resolve the alias to read_run records.
+    if ! curl -fsSLG "\${ena_base}/filereport" \
+        --data-urlencode "accession=\${acc}" \
+        --data-urlencode "result=read_run" \
+        --data-urlencode "fields=run_accession,fastq_ftp,fastq_md5" \
+        --data-urlencode "format=tsv" \
+        -o report.tsv; then
+        echo "WARN: ENA filereport failed for \${acc}; trying read_run search by accession/sample alias." >&2
+        ena_query="run_accession=\"\${acc}\" OR experiment_accession=\"\${acc}\" OR study_accession=\"\${acc}\" OR secondary_study_accession=\"\${acc}\" OR sample_accession=\"\${acc}\" OR secondary_sample_accession=\"\${acc}\" OR sample_alias=\"\${acc}\""
+        curl -fsSLG "\${ena_base}/search" \
+            --data-urlencode "result=read_run" \
+            --data-urlencode "query=\${ena_query}" \
+            --data-urlencode "fields=run_accession,fastq_ftp,fastq_md5" \
+            --data-urlencode "format=tsv" \
+            -o report.tsv
+    fi
+
     if [[ \$(tail -n +2 report.tsv | wc -l) -eq 0 ]]; then
-        echo "ERROR: No runs found for \${acc}" >&2; exit 1
+        echo "ERROR: No runs found for \${acc}. Checked ENA accession fields and sample_alias." >&2; exit 1
     fi
 
     # 2. 准备输出清单
