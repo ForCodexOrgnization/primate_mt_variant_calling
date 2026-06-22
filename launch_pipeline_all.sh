@@ -18,9 +18,9 @@ set -euo pipefail
 #   FULL_SAMPLE_LIST=/path/samples.tsv PRE_OUTPUT_DIR=/path/pre ROUND_OUTPUT_DIR=/path/results bash launch_pipeline_all.sh
 # ==============================================================================
 
-FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/project_pi_njl27/lt692/primate_mito_calling/mcc_sample.txt}"
-PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_pre}"
-ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/project/pi_njl27/lt692/primate_results}"
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primate_mt_variant_calling/human_sample.txt}"
+PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-//nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
+ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 ROUND1_OUTDIR="${ROUND1_OUTDIR:-${ROUND_OUTPUT_DIR}}"
 
 PRE_LAUNCH_SCRIPT="${PRE_LAUNCH_SCRIPT:-launch_pipeline_pre.sh}"
