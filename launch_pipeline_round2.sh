@@ -8,11 +8,12 @@
 set -euo pipefail
 
 # --- 用户配置区 ---
-FULL_SAMPLE_LIST="/home/lt692/project_pi_njl27/lt692/primate_mito_calling/mcc_sample.txt"
-BATCH_SIZE=5
-CONCURRENT_BATCHES=2
-NF_BASE_WORK_DIR="/nfs/roberts/pi/pi_njl27/lt692/primate_tmp/nf_work_dir_round2"
-OUTPUT_DIR="/nfs/roberts/project/pi_njl27/lt692/primate_results"
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/project_pi_njl27/lt692/primate_mito_calling/mcc_sample.txt}"
+BATCH_SIZE="${BATCH_SIZE:-5}"
+CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
+NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/pi/pi_njl27/lt692/primate_tmp/nf_work_dir_round2}"
+OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/project/pi_njl27/lt692/primate_results}"
+ROUND1_OUTDIR="${ROUND1_OUTDIR:-${OUTPUT_DIR}}"
 
 module load Nextflow/24.10.2
 # ==============================================================================
@@ -29,7 +30,8 @@ if [ -z "${SLURM_JOB_ID:-}" ]; then
     echo "Splitting ${FULL_SAMPLE_LIST} into batches of ${BATCH_SIZE} samples..."
     split -l "${BATCH_SIZE}" "${FULL_SAMPLE_LIST}" "${NF_BASE_WORK_DIR}/sample_batch_"
 
-    NUM_BATCHES=$(find "${NF_BASE_WORK_DIR}" -maxdepth 1 -type f -name "sample_batch_*" | wc -l)
+    mapfile -t BATCH_FILES < <(find "${NF_BASE_WORK_DIR}" -maxdepth 1 -type f -name "sample_batch_*" | sort)
+    NUM_BATCHES=${#BATCH_FILES[@]}
     if [ "${NUM_BATCHES}" -eq 0 ]; then
         echo "Error: No batch files were created under ${NF_BASE_WORK_DIR}"
         exit 1
@@ -58,9 +60,8 @@ else
     mkdir -p "${WORK_DIR}"
     cd "${WORK_DIR}"
 
-    TASK_ID_PLUS_ONE=$((SLURM_ARRAY_TASK_ID + 1))
-
-    BATCH_FILE=$(find "${NF_BASE_WORK_DIR}" -maxdepth 1 -type f -name "sample_batch_*" | sort | sed -n "${TASK_ID_PLUS_ONE}p")
+    mapfile -t BATCH_FILES < <(find "${NF_BASE_WORK_DIR}" -maxdepth 1 -type f -name "sample_batch_*" | sort)
+    BATCH_FILE="${BATCH_FILES[${SLURM_ARRAY_TASK_ID}]:-}"
 
     if [ -z "${BATCH_FILE}" ]; then
         echo "Error: Could not find batch file for task ID ${SLURM_ARRAY_TASK_ID} in ${NF_BASE_WORK_DIR}"
@@ -70,14 +71,17 @@ else
     echo "INFO: This task will process batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
 
+    set +e
     nextflow run "${SUBMIT_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
         -profile cluster \
         -resume \
         -w "${WORK_DIR}" \
         --sample_tsv "${BATCH_FILE}" \
-        --outdir "${OUTPUT_DIR}"
+        --outdir "${OUTPUT_DIR}" \
+        --round1_outdir "${ROUND1_OUTDIR}"
 
     NF_EXIT=$?
+    set -e
 
     if [ "${NF_EXIT}" -eq 0 ]; then
         echo "Batch ${SLURM_ARRAY_TASK_ID} completed successfully."

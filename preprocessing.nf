@@ -126,8 +126,11 @@ process DOWNLOAD_FASTQ {
         if [[ \${#urls[@]} -ne 2 ]]; then
             echo "ERROR: Run \$run_id is not paired-end." >&2; exit 1
         fi
+        if [[ \${#mds[@]} -ne \${#urls[@]} ]]; then
+            echo "ERROR: Run \$run_id has \${#urls[@]} FASTQ URLs but \${#mds[@]} MD5 values." >&2; exit 1
+        fi
 
-        # 下载 R1 和 R2
+        # 下载 R1 和 R2；下载完成后立即按 ENA 提供的 fastq_md5 校验
         for i in 0 1; do
             url="https://\${urls[\$i]}"
             target="fastqs/\${run_id}_\$((i+1)).fastq.gz"
@@ -140,6 +143,12 @@ process DOWNLOAD_FASTQ {
             # --summary-interval=0: 减少日志刷屏
             ${aria2_bin} -x 10 -s 10 -c -m 0 --retry-wait 5 \\
                 --summary-interval=0 -d fastqs -o "\${run_id}_\$((i+1)).fastq.gz" "\$url"
+
+            if [[ -z "\${mds[\$i]}" ]]; then
+                echo "ERROR: Missing MD5 checksum for \$target in ENA report." >&2
+                rm -f "\$target"
+                exit 1
+            fi
 
             # 验证 MD5，如果失败则删除文件并报错退出
             if ! echo "\${mds[\$i]}  \$target" | md5sum -c -; then

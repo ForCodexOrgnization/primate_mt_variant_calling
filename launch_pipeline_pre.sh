@@ -8,11 +8,11 @@
 set -e
 
 # --- 用户配置区 ---
-FULL_SAMPLE_LIST="/home/lt692/project_pi_njl27/lt692/primate_mito_calling/list_check_cram_1.txt"
-BATCH_SIZE=5
-CONCURRENT_BATCHES=2
-NF_BASE_WORK_DIR="/nfs/roberts/pi/pi_njl27/lt692/primate_tmp/nf_work_dir_pre"
-OUTPUT_DIR="/home/lt692/scratch_pi_njl27/lt692/primate_pre"
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/project_pi_njl27/lt692/primate_mito_calling/list_check_cram_1.txt}"
+BATCH_SIZE="${BATCH_SIZE:-5}"
+CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
+NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/pi/pi_njl27/lt692/primate_tmp/nf_work_dir_pre}"
+OUTPUT_DIR="${OUTPUT_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_pre}"
 
 module load Nextflow/24.10.2
 # ==============================================================================
@@ -32,7 +32,8 @@ if [ -z "$SLURM_JOB_ID" ]; then
     # 直接把 batch 文件写到 NF_BASE_WORK_DIR 下
     split -l "${BATCH_SIZE}" "${FULL_SAMPLE_LIST}" "${NF_BASE_WORK_DIR}/sample_batch_"
 
-    NUM_BATCHES=$(ls -1 "${NF_BASE_WORK_DIR}"/sample_batch_* 2>/dev/null | wc -l)
+    mapfile -t BATCH_FILES < <(find "${NF_BASE_WORK_DIR}" -maxdepth 1 -type f -name 'sample_batch_*' | sort)
+    NUM_BATCHES=${#BATCH_FILES[@]}
     if [ "${NUM_BATCHES}" -eq 0 ]; then
         echo "Error: No batch files were created under ${NF_BASE_WORK_DIR}."
         exit 1
@@ -69,7 +70,8 @@ else
     TASK_ID_PLUS_ONE=$((SLURM_ARRAY_TASK_ID + 1))
 
     # 从 NF_BASE_WORK_DIR 下的 sample_batch_* 中，按排序顺序取第 N 个
-    BATCH_FILE=$(ls "${NF_BASE_WORK_DIR}"/sample_batch_* 2>/dev/null | sort | sed -n "${TASK_ID_PLUS_ONE}p")
+    mapfile -t BATCH_FILES < <(find "${NF_BASE_WORK_DIR}" -maxdepth 1 -type f -name 'sample_batch_*' | sort)
+    BATCH_FILE="${BATCH_FILES[${SLURM_ARRAY_TASK_ID}]:-}"
 
     if [ -z "${BATCH_FILE}" ]; then
         echo "Error: Could not find batch file for task ID ${SLURM_ARRAY_TASK_ID} in ${NF_BASE_WORK_DIR}."
@@ -79,6 +81,7 @@ else
     echo "INFO: This task will process batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
 
+    set +e
     nextflow run "${SUBMIT_DIR}/preprocessing.nf" \
         -profile cluster \
         -resume \
@@ -87,6 +90,7 @@ else
         --outdir "${OUTPUT_DIR}"
 
     NF_EXIT=$?
+    set -e
 
     if [ ${NF_EXIT} -eq 0 ]; then
         echo "Batch ${SLURM_ARRAY_TASK_ID} completed successfully."
@@ -95,7 +99,7 @@ else
         cd "${SUBMIT_DIR}"
         
         # 自定义清理逻辑：删除输出目录里的 inputs 目录
-        find "$(readlink -f ${OUTPUT_DIR})" -type d -name "inputs" -exec rm -rf {} +
+        find "$(readlink -f "${OUTPUT_DIR}")" -type d -name "inputs" -exec rm -rf {} +
         rm -rf "${WORK_DIR}"
         #rm -f "${BATCH_FILE}"
 
