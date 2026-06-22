@@ -19,7 +19,7 @@ set -euo pipefail
 # ==============================================================================
 
 FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primate_mt_variant_calling/human_sample.txt}"
-PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-//nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
+PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 ROUND1_OUTDIR="${ROUND1_OUTDIR:-${ROUND_OUTPUT_DIR}}"
 
