@@ -1,6 +1,28 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
+params.skip_existing_cram = params.skip_existing_cram == null ? true : params.skip_existing_cram
+
+def existingCramIsComplete = { String sampleId ->
+    def cram = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram")
+    def crai = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram.crai")
+
+    if (!cram.isFile() || cram.length() == 0 || !crai.isFile() || crai.length() == 0) {
+        return false
+    }
+
+    try {
+        def proc = new ProcessBuilder('samtools', 'quickcheck', cram.absolutePath)
+            .redirectErrorStream(true)
+            .start()
+        proc.waitFor()
+        return proc.exitValue() == 0
+    } catch (IOException e) {
+        log.warn "Could not run 'samtools quickcheck' for existing CRAM ${cram}; will reprocess sample ${sampleId}."
+        return false
+    }
+}
+
 /*
 ================================================================================
     STRICT PRIMATE ALIGNMENT PIPELINE
@@ -13,6 +35,7 @@ STRICT PRIMATE ALIGNMENT PIPELINE START
 Sample TSV          : ${params.sample_tsv}
 Output Directory    : ${params.outdir}
 Reference Directory : ${params.global_ref_dir}
+Skip existing CRAM  : ${params.skip_existing_cram}
 ======================================
 """
 
@@ -25,6 +48,13 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         def species = row[1].trim()
         def ref_name = row[2].trim()
         tuple(meta, species, ref_name)
+    }
+    .filter { meta, species, ref_name ->
+        if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
+            log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
+            return false
+        }
+        return true
     }
 
 workflow {
