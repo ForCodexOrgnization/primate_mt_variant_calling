@@ -18,8 +18,8 @@ ROUND1_OUTDIR="${ROUND1_OUTDIR:-${OUTPUT_DIR}}"
 module load Nextflow/24.10.2
 # ==============================================================================
 
-if [ -z "${SLURM_JOB_ID:-}" ]; then
-    echo "--- Running in Master Mode on Login Node ---"
+if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
+    echo "--- Running in Master Mode on Login/Coordinator Node ---"
 
     mkdir -p "${NF_BASE_WORK_DIR}"
     mkdir -p log_round2

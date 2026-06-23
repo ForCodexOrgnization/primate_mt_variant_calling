@@ -17,9 +17,9 @@ OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 module load Nextflow/24.10.2
 # ==============================================================================
 
-if [ -z "$SLURM_JOB_ID" ]; then
+if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
     # --- 登录节点逻辑 (Master Mode) ---
-    echo "--- Running in Master Mode on Login Node ---"
+    echo "--- Running in Master Mode on Login/Coordinator Node ---"
 
     # 确保 NF_BASE_WORK_DIR 存在
     mkdir -p "${NF_BASE_WORK_DIR}"
