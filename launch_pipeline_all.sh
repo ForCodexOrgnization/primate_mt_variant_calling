@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# Chain preprocessing -> round 1 -> round 2 and validate hand-off files.
+# Chain preprocessing -> NUMT discovery -> round 1 -> round 2 and validate hand-off files.
 # Run from the repository directory on a login/submission node:
 #   bash launch_pipeline_all.sh
 # or submit the coordinator itself:
@@ -24,8 +24,23 @@ ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primat
 ROUND1_OUTDIR="${ROUND1_OUTDIR:-${ROUND_OUTPUT_DIR}}"
 
 PRE_LAUNCH_SCRIPT="${PRE_LAUNCH_SCRIPT:-launch_pipeline_pre.sh}"
+NUMT_LAUNCH_SCRIPT="${NUMT_LAUNCH_SCRIPT:-launch_pipeline_numt.sh}"
 ROUND1_LAUNCH_SCRIPT="${ROUND1_LAUNCH_SCRIPT:-launch_pipeline_round1.sh}"
 ROUND2_LAUNCH_SCRIPT="${ROUND2_LAUNCH_SCRIPT:-launch_pipeline_round2.sh}"
+
+NUMT_REPO="${NUMT_REPO:-/nfs/roberts/project/pi_njl27/lt692/numt_detection}"
+NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR}/numt_discovery}"
+NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
+# NUMT discovery reference inputs. Use the same naming as nextflow.config:
+#   GLOBAL_REF_DIR == whole-genome reference directory
+#   REF_DIR        == chrM reference directory
+# NUCLEAR_ONLY_REF_DIR is only used by numt_detection and must point to a
+# chrM-excluded reference set. Round 1 only consumes the resulting
+# high-confidence BEDs via NUMT_BED_DIR.
+REF_DIR="${REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
+GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
+NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_nuclear_only}"
+NUMT_CONCURRENT="${NUMT_CONCURRENT:-${CONCURRENT:-2}}"
 
 POLL_SECONDS="${POLL_SECONDS:-120}"
 LOG_DIR="${LOG_DIR:-log_all}"
@@ -126,6 +141,18 @@ validate_pre_to_round1() {
     log "Preprocessing validation passed"
 }
 
+validate_numt_to_round1() {
+    log "Validating NUMT discovery outputs needed by round 1"
+    local missing=0 sample bed
+    while IFS= read -r sample; do
+        bed="${NUMT_BESTHIT_OUTDIR}/${sample}.highconf_numt.bed"
+        # Empty BED files are valid for samples with no high-confidence NUMT calls.
+        [[ -e "${bed}" ]] || { echo "MISSING: ${bed}" >&2; missing=1; }
+    done < <(read_sample_ids)
+    [[ "${missing}" -eq 0 ]] || fail "NUMT discovery outputs are incomplete; round 1 was not submitted"
+    log "NUMT discovery validation passed"
+}
+
 validate_round1_to_round2() {
     log "Validating round 1 outputs needed by round 2"
     local missing=0 sample
@@ -162,12 +189,21 @@ log "Starting chained pipeline"
 log "Sample list: ${FULL_SAMPLE_LIST}"
 log "Preprocessing output dir: ${PRE_OUTPUT_DIR}"
 log "Round output dir: ${ROUND_OUTPUT_DIR}"
+log "NUMT discovery outroot: ${NUMT_DISCOVERY_OUTROOT}"
+log "NUMT best-hit BED dir: ${NUMT_BESTHIT_OUTDIR}"
+log "NUMT global reference dir: ${GLOBAL_REF_DIR}"
+log "NUMT nuclear-only reference dir: ${NUCLEAR_ONLY_REF_DIR}"
+log "NUMT chrM reference dir: ${REF_DIR}"
 
 pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${PRE_OUTPUT_DIR}")"
 wait_for_job "${pre_job}" preprocess
 validate_pre_to_round1
 
-round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}")"
+numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" NUMT_REPO="${NUMT_REPO}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" CONCURRENT="${NUMT_CONCURRENT}")"
+wait_for_job "${numt_job}" numt
+validate_numt_to_round1
+
+round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}")"
 wait_for_job "${round1_job}" round1
 validate_round1_to_round2
 
@@ -175,4 +211,4 @@ round2_job="$(submit_step round2 "${ROUND2_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${F
 wait_for_job "${round2_job}" round2
 validate_round2_final
 
-log "All three steps completed and validation checks passed"
+log "All four steps completed and validation checks passed"
