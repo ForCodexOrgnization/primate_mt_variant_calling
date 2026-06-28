@@ -194,7 +194,7 @@ process PREPARE_DECOY_REFERENCE {
           emit: original_numt_fa
 
     script:
-    def whole_ref = "${params.global_ref_dir}/${ref_name}.fasta"
+    def whole_ref = "${params.global_ref_dir}/${ref_name}.fa"
     def numt_bed  = "${params.numt_bed_dir}/${meta.id}${params.numt_bed_suffix}"
     def mt_contig = params.mt_contig ?: "chrM"
     def consensus_numt_dir = params.consensus_numt_dir ?: ""
@@ -330,7 +330,7 @@ process EXTRACT_CANDIDATE_READS {
     set -euo pipefail
 
     SAMPLE_ID="${meta.id}"
-    REF="${params.global_ref_dir}/${ref_name}.fasta"
+    REF="${params.global_ref_dir}/${ref_name}.fa"
     BED="${numt_bed}"
     MT_CONTIG="${mt_contig}"
     THREADS=${task.cpus ?: 4}
@@ -806,7 +806,7 @@ process BAM_TO_CRAM_CLEAN {
           emit: cram
 
     script:
-    def mt_ref = "${params.ref_dir}/${ref_name}.fasta"
+    def mt_ref = "${params.ref_dir}/${ref_name}.fa"
     """
     #!/usr/bin/env bash
     set -euo pipefail
@@ -873,7 +873,7 @@ process GENERATE_WDL_JSON {
     tuple val(meta), path("${meta.id}_wdl_inputs.json"), emit: json
 
     script:
-    def mt_fasta = "${params.ref_dir}/${ref_name}.fasta"
+    def mt_fasta = "${params.ref_dir}/${ref_name}.fa"
     """
     #!/usr/bin/env bash
     set -euo pipefail
@@ -906,27 +906,27 @@ process GENERATE_WDL_JSON {
   "MitochondriaMultiSamplePipeline.compress_output_vcf": true,
   "MitochondriaMultiSamplePipeline.inputSamplesFile": "\$(readlink -f ${cram_tsv})",
 
-  "MitochondriaMultiSamplePipeline.ref_fasta": "${params.global_ref_dir}/${ref_name}.fasta",
-  "MitochondriaMultiSamplePipeline.ref_fasta_index": "${params.global_ref_dir}/${ref_name}.fasta.fai",
+  "MitochondriaMultiSamplePipeline.ref_fasta": "${params.global_ref_dir}/${ref_name}.fa",
+  "MitochondriaMultiSamplePipeline.ref_fasta_index": "${params.global_ref_dir}/${ref_name}.fa.fai",
   "MitochondriaMultiSamplePipeline.ref_dict": "${params.global_ref_dir}/${ref_name}.dict",
 
   "MitochondriaMultiSamplePipeline.mt_dict": "${params.ref_dir}/${ref_name}.dict",
-  "MitochondriaMultiSamplePipeline.mt_fasta": "${params.ref_dir}/${ref_name}.fasta",
-  "MitochondriaMultiSamplePipeline.mt_fasta_index": "${params.ref_dir}/${ref_name}.fasta.fai",
-  "MitochondriaMultiSamplePipeline.mt_amb": "${params.ref_dir}/${ref_name}.fasta.amb",
-  "MitochondriaMultiSamplePipeline.mt_ann": "${params.ref_dir}/${ref_name}.fasta.ann",
-  "MitochondriaMultiSamplePipeline.mt_bwt": "${params.ref_dir}/${ref_name}.fasta.bwt",
-  "MitochondriaMultiSamplePipeline.mt_pac": "${params.ref_dir}/${ref_name}.fasta.pac",
-  "MitochondriaMultiSamplePipeline.mt_sa": "${params.ref_dir}/${ref_name}.fasta.sa",
+  "MitochondriaMultiSamplePipeline.mt_fasta": "${params.ref_dir}/${ref_name}.fa",
+  "MitochondriaMultiSamplePipeline.mt_fasta_index": "${params.ref_dir}/${ref_name}.fa.fai",
+  "MitochondriaMultiSamplePipeline.mt_amb": "${params.ref_dir}/${ref_name}.fa.amb",
+  "MitochondriaMultiSamplePipeline.mt_ann": "${params.ref_dir}/${ref_name}.fa.ann",
+  "MitochondriaMultiSamplePipeline.mt_bwt": "${params.ref_dir}/${ref_name}.fa.bwt",
+  "MitochondriaMultiSamplePipeline.mt_pac": "${params.ref_dir}/${ref_name}.fa.pac",
+  "MitochondriaMultiSamplePipeline.mt_sa": "${params.ref_dir}/${ref_name}.fa.sa",
 
   "MitochondriaMultiSamplePipeline.mt_shifted_dict": "${params.ref_shift_8000_dir}/${ref_name}.dict",
-  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "${params.ref_shift_8000_dir}/${ref_name}.fasta",
-  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "${params.ref_shift_8000_dir}/${ref_name}.fasta.fai",
-  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "${params.ref_shift_8000_dir}/${ref_name}.fasta.amb",
-  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "${params.ref_shift_8000_dir}/${ref_name}.fasta.ann",
-  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "${params.ref_shift_8000_dir}/${ref_name}.fasta.bwt",
-  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "${params.ref_shift_8000_dir}/${ref_name}.fasta.pac",
-  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "${params.ref_shift_8000_dir}/${ref_name}.fasta.sa",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta": "${params.ref_shift_8000_dir}/${ref_name}.fa",
+  "MitochondriaMultiSamplePipeline.mt_shifted_fasta_index": "${params.ref_shift_8000_dir}/${ref_name}.fa.fai",
+  "MitochondriaMultiSamplePipeline.mt_shifted_amb": "${params.ref_shift_8000_dir}/${ref_name}.fa.amb",
+  "MitochondriaMultiSamplePipeline.mt_shifted_ann": "${params.ref_shift_8000_dir}/${ref_name}.fa.ann",
+  "MitochondriaMultiSamplePipeline.mt_shifted_bwt": "${params.ref_shift_8000_dir}/${ref_name}.fa.bwt",
+  "MitochondriaMultiSamplePipeline.mt_shifted_pac": "${params.ref_shift_8000_dir}/${ref_name}.fa.pac",
+  "MitochondriaMultiSamplePipeline.mt_shifted_sa": "${params.ref_shift_8000_dir}/${ref_name}.fa.sa",
 
   "MitochondriaMultiSamplePipeline.shift_back_chain": "${params.shift_back_chain_dir}/${ref_name}_ShiftBack.chain",
   "MitochondriaMultiSamplePipeline.non_control_region_interval_list": "${params.ref_interval_dir}/${ref_name}_non_control_region.interval_list",
