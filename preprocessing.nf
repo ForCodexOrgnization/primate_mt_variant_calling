@@ -40,15 +40,38 @@ Skip existing CRAM  : ${params.skip_existing_cram}
 """
 
 // 1. 从 TSV 读取初始样本信息
-ch_samples = Channel.fromPath(params.sample_tsv)
-    .splitCsv(header: false, sep: '\t')
-    .filter { row -> row.size() >= 3 && row[0]?.trim() }
+//
+// Important: Nextflow prints process names with "[-]" when their input channels are
+// empty.  That looks like a skip even when no complete CRAM was found.  Fail fast
+// for empty/malformed sample batches so an empty output directory cannot be
+// reported as a successful run.
+ch_parsed_samples = Channel.fromPath(params.sample_tsv)
+    .ifEmpty { error "Sample TSV path did not match any file: ${params.sample_tsv}" }
+    .splitCsv(header: false, sep: '\t', strip: true)
+    .filter { row ->
+        if (row.size() < 3 || !row[0]?.trim()) {
+            log.warn "Ignoring malformed/blank sample TSV row: ${row}"
+            return false
+        }
+        return true
+    }
+    .filter { row ->
+        def sample_id = row[0].trim()
+        if (sample_id.equalsIgnoreCase('sample') || sample_id.equalsIgnoreCase('sample_id')) {
+            log.warn "Ignoring sample TSV header row: ${row}"
+            return false
+        }
+        return true
+    }
     .map { row ->
         def meta = [id: row[0].trim()]
         def species = row[1].trim()
         def ref_name = row[2].trim()
         tuple(meta, species, ref_name)
     }
+    .ifEmpty { error "No valid samples found in ${params.sample_tsv}; expected tab-separated rows: sample_id<TAB>species_name<TAB>ref_name" }
+
+ch_samples = ch_parsed_samples
     .filter { meta, species, ref_name ->
         if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
             log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
@@ -56,6 +79,7 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         }
         return true
     }
+    .ifEmpty { error "No samples left to process after existing-CRAM checks. If ${params.outdir} is empty or incomplete, rerun with --skip_existing_cram false and verify sample IDs match expected <outdir>/<sample>/alignment/<sample>.cram(.crai)." }
 
 workflow {
 
