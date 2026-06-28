@@ -424,7 +424,7 @@ process BUILD_CONSENSUS_REFERENCE {
           emit: consensus_ref
 
     script:
-    def mt_fasta = "${params.ref_dir}/${ref_name}.fasta"
+    def mt_fasta = "${params.ref_dir}/${ref_name}.fa"
     def numt_fasta = original_numt_fa
     def strictNumtRef = params.strict_numt_ref ? "true" : "false"
     def filterExpr = params.consensus_filter_expr.toString().replace("'", "'\\''")
@@ -1052,7 +1052,7 @@ process CALCULATE_ROUND2_MTCN {
 
     script:
     def mt_contig = params.mt_contig ?: "chrM"
-    def whole_ref = "${params.global_ref_dir}/${ref_name}.fasta"
+    def whole_ref = "${params.global_ref_dir}/${ref_name}.fa"
     def configuredCramDirs = (params.cram_dirs instanceof List ? params.cram_dirs : params.cram_dirs.toString().split(','))*.trim().findAll { it }
     def cramDirs = (configuredCramDirs + [params.round1_outdir?.toString()]).findAll { it }.unique()
     def cramDirsBash = cramDirs.collect { '"' + it + '"' }.join(' ')
@@ -1347,7 +1347,7 @@ process LIFTBACK_ROUND2_VCF_TO_ORIGINAL {
           emit: lifted_coverage
 
     script:
-    def mt_fasta = "${params.ref_dir}/${ref_name}.fasta"
+    def mt_fasta = "${params.ref_dir}/${ref_name}.fa"
     """
     #!/usr/bin/env bash
     set -euo pipefail

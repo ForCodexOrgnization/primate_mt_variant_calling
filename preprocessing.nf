@@ -253,7 +253,7 @@ process ALIGN_AND_SORT {
     tuple val(meta), val(species_name), val(ref_name), path("*.bam"), path("*.bai"), emit: bam
 
     script:
-    def ref_file = "${params.global_ref_dir}/${ref_name}.fasta"
+    def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
     // 将比例从 0.7 降至 0.6，预留更多 buffer 防止系统层面杀进程
     def sort_mem = task.memory ? "${(task.memory.toGiga() * 0.6 / task.cpus).toInteger()}G" : "2G"
     def bam_output = "${meta.id}.${meta.pair_id}.sorted.bam"
@@ -328,7 +328,7 @@ process BAM_TO_CRAM {
     tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.cram"), path("${meta.id}.cram.crai"), emit: cram
 
     script:
-    def ref_file = "${params.global_ref_dir}/${ref_name}.fasta"
+    def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
     def cram_out = "${meta.id}.cram"
     def crai_out = "${meta.id}.cram.crai"
     
