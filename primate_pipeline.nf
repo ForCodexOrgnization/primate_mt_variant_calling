@@ -18,12 +18,15 @@ WDL Script:          ${params.wdl_script}
 //                                  INPUT CHANNELS
 // ====================================================================================
 ch_samples = Channel.fromPath(params.sample_tsv)
-    .splitCsv(header: false, sep: '\t')
-    .filter { row -> row.size() >= 3 && row[0]?.trim() && row[1]?.trim() && row[2]?.trim() }
+    .splitCsv(header: false, sep: '\t', strip: true)
+    .filter { row -> row.size() >= 2 && row[0]?.trim() && row[1]?.trim() && !row[0].startsWith('#') }
+    .filter { row -> !row[0].trim().equalsIgnoreCase('sample') && !row[0].trim().equalsIgnoreCase('sample_id') }
     .map { row ->
         def meta = [id: row[0].trim()]
         def species = row[1].trim()
-        def ref_name = row[2].trim() // 第三列：参考序列名称
+        // Input lists are now two-column by default: sample_id, species_name.
+        // Keep optional third-column compatibility; otherwise ref_name == species.
+        def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species
         tuple(meta, species, ref_name)
     }
 

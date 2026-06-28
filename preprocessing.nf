@@ -1,7 +1,9 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-params.skip_existing_cram = params.skip_existing_cram == null ? true : params.skip_existing_cram
+if (!params.containsKey('skip_existing_cram') || params.skip_existing_cram == null) {
+    params.skip_existing_cram = true
+}
 
 def existingCramIsComplete = { String sampleId ->
     def cram = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram")
@@ -49,7 +51,7 @@ ch_parsed_samples = Channel.fromPath(params.sample_tsv)
     .ifEmpty { error "Sample TSV path did not match any file: ${params.sample_tsv}" }
     .splitCsv(header: false, sep: '\t', strip: true)
     .filter { row ->
-        if (row.size() < 3 || !row[0]?.trim()) {
+        if (row.size() < 2 || !row[0]?.trim()) {
             log.warn "Ignoring malformed/blank sample TSV row: ${row}"
             return false
         }
@@ -66,10 +68,13 @@ ch_parsed_samples = Channel.fromPath(params.sample_tsv)
     .map { row ->
         def meta = [id: row[0].trim()]
         def species = row[1].trim()
-        def ref_name = row[2].trim()
+        // Accept both legacy 2-column batches (sample_id, species_name) and
+        // 3-column batches (sample_id, species_name, ref_name).  For the
+        // current reference layout, ref_name defaults to species_name.
+        def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species
         tuple(meta, species, ref_name)
     }
-    .ifEmpty { error "No valid samples found in ${params.sample_tsv}; expected tab-separated rows: sample_id<TAB>species_name<TAB>ref_name" }
+    .ifEmpty { error "No valid samples found in ${params.sample_tsv}; expected tab-separated rows: sample_id<TAB>species_name[<TAB>ref_name]" }
 
 ch_samples = ch_parsed_samples
     .filter { meta, species, ref_name ->
@@ -352,7 +357,9 @@ process BAM_TO_CRAM {
 }
 
 workflow.onComplete {
-    log.info "Pipeline completed successfully at: \${workflow.complete}"
+    if (workflow.success) {
+        log.info "Pipeline completed successfully at: ${workflow.complete}"
+    }
 }
 
 workflow.onError {
