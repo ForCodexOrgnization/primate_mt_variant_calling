@@ -14,6 +14,7 @@ CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_round1}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 CRAM_DIRS="${CRAM_DIRS:-${OUTPUT_DIR}}"
+NUMT_BED_DIR="${NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict}"
 
 module load Nextflow/24.10.2
 # ==============================================================================
@@ -78,7 +79,8 @@ else
         -w "${WORK_DIR}" \
         --sample_tsv "${BATCH_FILE}" \
         --outdir "${OUTPUT_DIR}" \
-        --cram_dirs "${CRAM_DIRS}"
+        --cram_dirs "${CRAM_DIRS}" \
+        --numt_bed_dir "${NUMT_BED_DIR}"
 
     NF_EXIT=$?
     set -e
