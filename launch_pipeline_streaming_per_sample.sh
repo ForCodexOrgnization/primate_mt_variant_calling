@@ -2,7 +2,7 @@
 #SBATCH --job-name=NF_Primate_Stream
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
-#SBATCH --time=72:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=log_streaming/nf_streaming_%A_%a.log
 
 set -euo pipefail
@@ -37,7 +37,7 @@ REF_DIR="${REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/re
 NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_nuclear_only}"
 
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_streaming_per_sample}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-2}"
+MAX_CONCURRENT="${MAX_CONCURRENT:-10}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-0}"
 LOG_DIR="${LOG_DIR:-log_streaming}"
 
