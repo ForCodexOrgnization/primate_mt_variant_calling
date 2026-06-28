@@ -98,25 +98,39 @@ SAMPLE_TSV="${SAMPLE_TSV_DIR}/${SAMPLE_ID}.sample.tsv"
 PRE_WORK_DIR="${SAMPLE_WORK_ROOT}/pre"
 ROUND1_WORK_DIR="${SAMPLE_WORK_ROOT}/round1"
 ROUND2_WORK_DIR="${SAMPLE_WORK_ROOT}/round2"
+# Run each Nextflow invocation from a sample/stage-specific launch directory so
+# parallel array tasks do not contend for the repository-level .nextflow cache lock.
+PRE_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/pre"
+ROUND1_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round1"
+ROUND2_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round2"
 NUMT_CONFIG="${SAMPLE_WORK_ROOT}/${SAMPLE_ID}.numt.config"
 
 mkdir -p "${SAMPLE_TSV_DIR}" "${PRE_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}" \
+    "${PRE_LAUNCH_DIR}" "${ROUND1_LAUNCH_DIR}" "${ROUND2_LAUNCH_DIR}" \
     "${NUMT_DISCOVERY_OUTROOT}" "${NUMT_BESTHIT_OUTDIR}"
 printf '%s\n' "${SAMPLE_LINE}" > "${SAMPLE_TSV}"
 
 log "Sample: ${SAMPLE_ID}"
 log "One-sample TSV: ${SAMPLE_TSV}"
 
-log "Starting preprocessing for ${SAMPLE_ID}"
-nextflow run "${REPO_DIR}/preprocessing.nf" \
-    -profile cluster \
-    -resume \
-    -w "${PRE_WORK_DIR}" \
-    --sample_tsv "${SAMPLE_TSV}" \
-    --outdir "${PRE_OUTPUT_DIR}"
-
 CRAM_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram"
 CRAI_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram.crai"
+
+if [[ -s "${CRAM_PATH}" && -s "${CRAI_PATH}" ]]; then
+    log "Skipping preprocessing for ${SAMPLE_ID}; existing CRAM and CRAI were found"
+else
+    log "Starting preprocessing for ${SAMPLE_ID}"
+    (
+        cd "${PRE_LAUNCH_DIR}"
+        nextflow run "${REPO_DIR}/preprocessing.nf" \
+            -profile cluster \
+            -resume \
+            -w "${PRE_WORK_DIR}" \
+            --sample_tsv "${SAMPLE_TSV}" \
+            --outdir "${PRE_OUTPUT_DIR}"
+    )
+fi
+
 validate_file_nonempty "${CRAM_PATH}"
 validate_file_nonempty "${CRAI_PATH}"
 log "Preprocessing validation passed for ${SAMPLE_ID}"
@@ -147,14 +161,17 @@ validate_file_exists "${NUMT_BED}"
 log "NUMT validation passed for ${SAMPLE_ID}"
 
 log "Starting round 1 for ${SAMPLE_ID}"
-nextflow run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
-    -profile cluster \
-    -resume \
-    -w "${ROUND1_WORK_DIR}" \
-    --sample_tsv "${SAMPLE_TSV}" \
-    --outdir "${ROUND1_OUTDIR}" \
-    --cram_dirs "${PRE_OUTPUT_DIR}" \
-    --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}"
+(
+    cd "${ROUND1_LAUNCH_DIR}"
+    nextflow run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
+        -profile cluster \
+        -resume \
+        -w "${ROUND1_WORK_DIR}" \
+        --sample_tsv "${SAMPLE_TSV}" \
+        --outdir "${ROUND1_OUTDIR}" \
+        --cram_dirs "${PRE_OUTPUT_DIR}" \
+        --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}"
+)
 
 ROUND1_BAM="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/candidate_reads/${SAMPLE_ID}.with_mates.bam"
 ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1_variant_calling_decoy"
@@ -170,13 +187,16 @@ validate_file_nonempty "${ROUND1_NUMT_VCF}.tbi"
 log "Round 1 validation passed for ${SAMPLE_ID}"
 
 log "Starting round 2 for ${SAMPLE_ID}"
-nextflow run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
-    -profile cluster \
-    -resume \
-    -w "${ROUND2_WORK_DIR}" \
-    --sample_tsv "${SAMPLE_TSV}" \
-    --outdir "${ROUND_OUTPUT_DIR}" \
-    --round1_outdir "${ROUND1_OUTDIR}"
+(
+    cd "${ROUND2_LAUNCH_DIR}"
+    nextflow run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
+        -profile cluster \
+        -resume \
+        -w "${ROUND2_WORK_DIR}" \
+        --sample_tsv "${SAMPLE_TSV}" \
+        --outdir "${ROUND_OUTPUT_DIR}" \
+        --round1_outdir "${ROUND1_OUTDIR}"
+)
 
 ROUND2_VCF_DIR="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2_variant_calling_original_coords"
 [[ -d "${ROUND2_VCF_DIR}" ]] || fail "Missing required directory: ${ROUND2_VCF_DIR}"
