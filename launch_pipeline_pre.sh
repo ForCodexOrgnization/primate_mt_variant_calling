@@ -93,6 +93,28 @@ else
     set -e
 
     if [ ${NF_EXIT} -eq 0 ]; then
+        echo "Verifying CRAM/CRAI outputs for batch ${SLURM_ARRAY_TASK_ID} before cleanup..."
+        VERIFY_EXIT=0
+        while IFS=$'\t' read -r SAMPLE_ID _; do
+            # Skip blank lines and an optional header.
+            if [ -z "${SAMPLE_ID}" ] || [ "${SAMPLE_ID}" = "sample" ] || [ "${SAMPLE_ID}" = "sample_id" ]; then
+                continue
+            fi
+            CRAM_PATH="${OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram"
+            CRAI_PATH="${OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram.crai"
+            if [ ! -s "${CRAM_PATH}" ] || [ ! -s "${CRAI_PATH}" ]; then
+                echo "ERROR: Nextflow exited 0 but expected CRAM/CRAI is missing or empty for sample '${SAMPLE_ID}'." >&2
+                echo "       CRAM: ${CRAM_PATH}" >&2
+                echo "       CRAI: ${CRAI_PATH}" >&2
+                VERIFY_EXIT=1
+            fi
+        done < "${BATCH_FILE}"
+
+        if [ ${VERIFY_EXIT} -ne 0 ]; then
+            echo "Batch ${SLURM_ARRAY_TASK_ID} failed output verification; retaining work directory for debugging: ${WORK_DIR}" >&2
+            exit ${VERIFY_EXIT}
+        fi
+
         echo "Batch ${SLURM_ARRAY_TASK_ID} completed successfully."
         # 成功：清理 Nextflow work 目录以释放空间
         echo "Cleaning up Nextflow work directory: ${WORK_DIR}"

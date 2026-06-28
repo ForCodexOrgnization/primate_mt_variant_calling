@@ -66,7 +66,7 @@ fail() {
 }
 
 read_sample_ids() {
-    awk -F '\t' 'NF >= 3 && $1 !~ /^#/ && $1 != "" {print $1}' "${FULL_SAMPLE_LIST}"
+    awk -F '\t' 'NF >= 2 && $1 !~ /^#/ && $1 != "" {print $1}' "${FULL_SAMPLE_LIST}"
 }
 
 submit_step() {

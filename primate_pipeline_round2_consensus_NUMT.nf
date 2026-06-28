@@ -69,12 +69,13 @@ WDL script:             ${params.wdl_script_round2}
 """
 
 ch_samples = Channel.fromPath(params.sample_tsv)
-    .splitCsv(header: false, sep: '\t')
-    .filter { row -> row.size() >= 3 && row[0]?.trim() && !row[0].startsWith('#') }
+    .splitCsv(header: false, sep: '\t', strip: true)
+    .filter { row -> row.size() >= 2 && row[0]?.trim() && row[1]?.trim() && !row[0].startsWith('#') }
+    .filter { row -> !row[0].trim().equalsIgnoreCase('sample') && !row[0].trim().equalsIgnoreCase('sample_id') }
     .map { row ->
         def sample_id = row[0].trim()
         def species_name = row[1].trim()
-        def ref_name = row[2].trim()
+        def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species_name
 
         def round2_dir = file("${params.outdir}/${sample_id}/round_2")
         def original_coords_dir = file("${params.outdir}/${sample_id}/round_2_variant_calling_original_coords")

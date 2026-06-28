@@ -7,7 +7,7 @@ nextflow.enable.dsl=2
  * Input sample TSV columns:
  *   col1 = sample_id
  *   col2 = species_name
- *   col3 = ref_name
+ *   col3 = ref_name (optional; defaults to species_name)
  *
  * This pipeline starts from existing WGS CRAMs and performs:
  *   1) locate CRAM/CRAI
@@ -41,12 +41,13 @@ WDL Script:              ${params.wdl_script}
 """
 
 ch_samples = Channel.fromPath(params.sample_tsv)
-    .splitCsv(header: false, sep: '\t')
-    .filter { row -> row.size() >= 3 && row[0]?.trim() && row[1]?.trim() && row[2]?.trim() }
+    .splitCsv(header: false, sep: '\t', strip: true)
+    .filter { row -> row.size() >= 2 && row[0]?.trim() && row[1]?.trim() && !row[0].startsWith('#') }
+    .filter { row -> !row[0].trim().equalsIgnoreCase('sample') && !row[0].trim().equalsIgnoreCase('sample_id') }
     .map { row ->
         def sample_id = row[0].trim()
         def species = row[1].trim()
-        def ref_name = row[2].trim()
+        def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species
 
         def round1_dir      = file("${params.outdir}/${sample_id}/round_1")
         def vc_dir          = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")

@@ -1,7 +1,9 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-params.skip_existing_cram = params.skip_existing_cram == null ? true : params.skip_existing_cram
+if (!params.containsKey('skip_existing_cram') || params.skip_existing_cram == null) {
+    params.skip_existing_cram = true
+}
 
 def existingCramIsComplete = { String sampleId ->
     def cram = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram")
@@ -40,15 +42,41 @@ Skip existing CRAM  : ${params.skip_existing_cram}
 """
 
 // 1. 从 TSV 读取初始样本信息
-ch_samples = Channel.fromPath(params.sample_tsv)
-    .splitCsv(header: false, sep: '\t')
-    .filter { row -> row.size() >= 3 && row[0]?.trim() }
+//
+// Important: Nextflow prints process names with "[-]" when their input channels are
+// empty.  That looks like a skip even when no complete CRAM was found.  Fail fast
+// for empty/malformed sample batches so an empty output directory cannot be
+// reported as a successful run.
+ch_parsed_samples = Channel.fromPath(params.sample_tsv)
+    .ifEmpty { error "Sample TSV path did not match any file: ${params.sample_tsv}" }
+    .splitCsv(header: false, sep: '\t', strip: true)
+    .filter { row ->
+        if (row.size() < 2 || !row[0]?.trim()) {
+            log.warn "Ignoring malformed/blank sample TSV row: ${row}"
+            return false
+        }
+        return true
+    }
+    .filter { row ->
+        def sample_id = row[0].trim()
+        if (sample_id.equalsIgnoreCase('sample') || sample_id.equalsIgnoreCase('sample_id')) {
+            log.warn "Ignoring sample TSV header row: ${row}"
+            return false
+        }
+        return true
+    }
     .map { row ->
         def meta = [id: row[0].trim()]
         def species = row[1].trim()
-        def ref_name = row[2].trim()
+        // Accept both legacy 2-column batches (sample_id, species_name) and
+        // 3-column batches (sample_id, species_name, ref_name).  For the
+        // current reference layout, ref_name defaults to species_name.
+        def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species
         tuple(meta, species, ref_name)
     }
+    .ifEmpty { error "No valid samples found in ${params.sample_tsv}; expected tab-separated rows: sample_id<TAB>species_name[<TAB>ref_name]" }
+
+ch_samples = ch_parsed_samples
     .filter { meta, species, ref_name ->
         if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
             log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
@@ -56,6 +84,7 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         }
         return true
     }
+    .ifEmpty { error "No samples left to process after existing-CRAM checks. If ${params.outdir} is empty or incomplete, rerun with --skip_existing_cram false and verify sample IDs match expected <outdir>/<sample>/alignment/<sample>.cram(.crai)." }
 
 workflow {
 
@@ -328,7 +357,9 @@ process BAM_TO_CRAM {
 }
 
 workflow.onComplete {
-    log.info "Pipeline completed successfully at: \${workflow.complete}"
+    if (workflow.success) {
+        log.info "Pipeline completed successfully at: ${workflow.complete}"
+    }
 }
 
 workflow.onError {
