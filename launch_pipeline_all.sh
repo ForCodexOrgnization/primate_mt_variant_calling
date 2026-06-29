@@ -28,7 +28,6 @@ NUMT_LAUNCH_SCRIPT="${NUMT_LAUNCH_SCRIPT:-launch_pipeline_numt.sh}"
 ROUND1_LAUNCH_SCRIPT="${ROUND1_LAUNCH_SCRIPT:-launch_pipeline_round1.sh}"
 ROUND2_LAUNCH_SCRIPT="${ROUND2_LAUNCH_SCRIPT:-launch_pipeline_round2.sh}"
 
-NUMT_REPO="${NUMT_REPO:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/numt_detection}"
 NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR}/numt_discovery}"
 NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
 # NUMT discovery reference inputs. Use the same naming as nextflow.config:
@@ -199,7 +198,7 @@ pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FUL
 wait_for_job "${pre_job}" preprocess
 validate_pre_to_round1
 
-numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" NUMT_REPO="${NUMT_REPO}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" CONCURRENT="${NUMT_CONCURRENT}")"
+numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" CONCURRENT="${NUMT_CONCURRENT}")"
 wait_for_job "${numt_job}" numt
 validate_numt_to_round1
 

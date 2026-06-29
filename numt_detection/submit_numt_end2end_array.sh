@@ -121,27 +121,35 @@ else
   exit 1
 fi
 
-resolve_ref_fasta() {
-  local ref_name="$1"
-  local ref_dir="$2"
+find_ref() {
+  local dir="$1"
+  local name="$2"
+  shift 2
   local suffix
-  for suffix in ".fa" ".fasta" ".fna" ".nuclear_only.fa"; do
-    if [[ -s "${ref_dir}/${ref_name}${suffix}" ]]; then
-      echo "${ref_dir}/${ref_name}${suffix}"
+
+  for suffix in "$@"; do
+    if [[ -s "${dir}/${name}${suffix}" ]]; then
+      printf '%s\n' "${dir}/${name}${suffix}"
       return 0
     fi
   done
-  find "$ref_dir" -maxdepth 1 -type f \( \
-    -name "${ref_name}.fa" -o -name "${ref_name}.fasta" -o -name "${ref_name}.fna" -o \
-    -name "${ref_name}.nuclear_only.fa" -o -name "${ref_name}*.fa" -o \
-    -name "${ref_name}*.fasta" -o -name "${ref_name}*.fna" \
-  \) | head -n 1
+
+  return 1
 }
 
-WGS_REF="$(resolve_ref_fasta "$REF_SPECIES" "$WHOLE_REF_DIR")"
-NUCLEAR_REF="$(resolve_ref_fasta "$REF_SPECIES" "$NUCLEAR_ONLY_REF_DIR")"
-[[ -s "$WGS_REF" ]] || { echo "ERROR: WGS ref missing: $WGS_REF" >&2; exit 1; }
-[[ -s "$NUCLEAR_REF" ]] || { echo "ERROR: nuclear ref missing: $NUCLEAR_REF" >&2; exit 1; }
+WGS_REF="$(find_ref "${WHOLE_REF_DIR}" "${REF_SPECIES}" \
+  ".fasta" ".fa" ".fna")" || {
+  echo "ERROR: WGS ref missing for ${REF_SPECIES} under ${WHOLE_REF_DIR}" >&2
+  echo "Tried suffixes: .fasta .fa .fna" >&2
+  exit 1
+}
+
+NUCLEAR_REF="$(find_ref "${NUCLEAR_ONLY_REF_DIR}" "${REF_SPECIES}" \
+  ".fasta" ".fa" ".fna" ".nuclear_only.fasta" ".nuclear_only.fa" ".nuclear_only.fna")" || {
+  echo "ERROR: nuclear ref missing for ${REF_SPECIES} under ${NUCLEAR_ONLY_REF_DIR}" >&2
+  echo "Tried suffixes: .fasta .fa .fna .nuclear_only.fasta .nuclear_only.fa .nuclear_only.fna" >&2
+  exit 1
+}
 
 samtools faidx "$WGS_REF" >/dev/null 2>&1 || true
 MT_CONTIG="${MT_CONTIG:-chrM}"

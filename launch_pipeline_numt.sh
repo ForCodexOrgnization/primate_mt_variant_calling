@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Submit NUMT discovery between preprocessing and round 1.
 # Required environment variables:
-#   FULL_SAMPLE_LIST, PRE_OUTPUT_DIR, NUMT_REPO, GLOBAL_REF_DIR,
+#   FULL_SAMPLE_LIST, PRE_OUTPUT_DIR, GLOBAL_REF_DIR,
 #   NUCLEAR_ONLY_REF_DIR, REF_DIR, DISCOVERY_OUTROOT, BESTHIT_OUTDIR
 # Optional:
 #   CONCURRENT (default: 2)
@@ -24,7 +24,15 @@ set -euo pipefail
 
 FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:?Set FULL_SAMPLE_LIST to the sample TSV used by preprocessing/round1}"
 PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:?Set PRE_OUTPUT_DIR to preprocessing output root}"
-NUMT_REPO="${NUMT_REPO:?Set NUMT_REPO to the numt_detection checkout}"
+# When submitted with sbatch, Slurm may execute a spool copy of this script.
+# Prefer the original submission directory when it looks like this repository
+# checkout so the bundled numt_detection directory is used consistently.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}/numt_detection" ]]; then
+  SCRIPT_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+NUMT_DIR="${SCRIPT_DIR}/numt_detection"
 GLOBAL_REF_DIR="${GLOBAL_REF_DIR:?Set GLOBAL_REF_DIR to whole-genome reference directory}"
 NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:?Set NUCLEAR_ONLY_REF_DIR to nuclear-only reference directory}"
 REF_DIR="${REF_DIR:?Set REF_DIR to chrM reference directory}"
@@ -32,7 +40,7 @@ DISCOVERY_OUTROOT="${DISCOVERY_OUTROOT:?Set DISCOVERY_OUTROOT for NUMT discovery
 BESTHIT_OUTDIR="${BESTHIT_OUTDIR:?Set BESTHIT_OUTDIR for high-confidence NUMT BED outputs}"
 CONCURRENT="${CONCURRENT:-2}"
 
-[[ -d "${NUMT_REPO}" ]] || { echo "ERROR: NUMT_REPO does not exist: ${NUMT_REPO}" >&2; exit 1; }
+[[ -d "${NUMT_DIR}" ]] || { echo "ERROR: bundled numt_detection directory does not exist: ${NUMT_DIR}" >&2; exit 1; }
 [[ -f "${FULL_SAMPLE_LIST}" ]] || { echo "ERROR: FULL_SAMPLE_LIST does not exist: ${FULL_SAMPLE_LIST}" >&2; exit 1; }
 mkdir -p log_numt "${DISCOVERY_OUTROOT}" "${BESTHIT_OUTDIR}"
 
@@ -46,7 +54,7 @@ CRAM_ROOT_2=${PRE_OUTPUT_DIR}
 # numt_detection expects WHOLE_REF_DIR and CHRM_REF_DIR keys in its config.
 # Keep the primate_mt_variant_calling launch variables aligned with
 # nextflow.config (GLOBAL_REF_DIR and REF_DIR), and map them here at the
-# external tool boundary.
+# bundled tool boundary.
 WHOLE_REF_DIR=${GLOBAL_REF_DIR}
 NUCLEAR_ONLY_REF_DIR=${NUCLEAR_ONLY_REF_DIR}
 CHRM_REF_DIR=${REF_DIR}
@@ -54,8 +62,8 @@ DISCOVERY_OUTROOT=${DISCOVERY_OUTROOT}
 BESTHIT_OUTDIR=${BESTHIT_OUTDIR}
 CONFIG
 
-cd "${NUMT_REPO}"
-[[ -f submit_numt_end2end_array.sh ]] || { echo "ERROR: Missing submit_numt_end2end_array.sh in ${NUMT_REPO}" >&2; exit 1; }
+cd "${NUMT_DIR}"
+[[ -f submit_numt_end2end_array.sh ]] || { echo "ERROR: Missing submit_numt_end2end_array.sh in ${NUMT_DIR}" >&2; exit 1; }
 
 echo "INFO: Wrote NUMT auto config: ${auto_config}" >&2
 CONFIG="${auto_config}"
