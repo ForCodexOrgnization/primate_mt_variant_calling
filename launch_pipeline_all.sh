@@ -28,7 +28,7 @@ NUMT_LAUNCH_SCRIPT="${NUMT_LAUNCH_SCRIPT:-launch_pipeline_numt.sh}"
 ROUND1_LAUNCH_SCRIPT="${ROUND1_LAUNCH_SCRIPT:-launch_pipeline_round1.sh}"
 ROUND2_LAUNCH_SCRIPT="${ROUND2_LAUNCH_SCRIPT:-launch_pipeline_round2.sh}"
 
-NUMT_REPO="${NUMT_REPO:-/nfs/roberts/project/pi_njl27/lt692/numt_detection}"
+NUMT_REPO="${NUMT_REPO:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/numt_detection}"
 NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR}/numt_discovery}"
 NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
 # NUMT discovery reference inputs. Use the same naming as nextflow.config:
