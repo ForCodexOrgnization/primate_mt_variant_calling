@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ $# -lt 4 ]]; then
   echo "Usage: bash run_numt_one_from_3col.sh <samples.tsv> <task_id> <results_root> <nuclear_only_ref_dir> [threads] [min_mapq] [min_depth] [min_reads] [min_len] [merge_gap] [pad]" >&2
   exit 1
@@ -198,7 +200,7 @@ echo "OUTDIR       : ${OUTDIR}"
 echo "DISCOVERY_OUTROOT : ${DISCOVERY_OUTROOT}"
 echo "========================================"
 
-bash run_numt_discovery.sh \
+bash "${SCRIPT_DIR}/run_numt_discovery.sh" \
   --input "${INPUT_CRAM}" \
   --index "${INPUT_CRAI}" \
   --sample "${SAMPLE_ID}" \

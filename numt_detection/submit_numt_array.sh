@@ -12,7 +12,8 @@
 
 set -euo pipefail
 
-WORKDIR="/nfs/roberts/pi/pi_njl27/lt692/numt_discovery"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKDIR="$SCRIPT_DIR"
 SAMPLES_TSV="/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_numt_test_list.txt"
 RESULTS_ROOT="/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/results_strict_pad"
 NUCLEAR_ONLY_REF_DIR="/nfs/roberts/pi/pi_njl27/lt692/primate_ref_files/nuclear_only_refs"
@@ -30,10 +31,7 @@ cd "${WORKDIR}"
 mkdir -p logs
 mkdir -p "${RESULTS_ROOT}"
 
-module load SAMtools/1.21-GCC-13.3.0
-module load BWA/0.7.18-GCCcore-13.3.0
-module load miniconda/24.11.3
-conda activate blast_env
+source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 echo "Job ID     : ${SLURM_JOB_ID}"
 echo "Array task : ${SLURM_ARRAY_TASK_ID}"
@@ -62,7 +60,7 @@ if compgen -G "${SAMPLE_OUTDIR}"/*.numt_candidates.bed > /dev/null; then
   exit 0
 fi
 
-bash run_numt_one_from_3col.sh \
+bash "${SCRIPT_DIR}/run_numt_one_from_3col.sh" \
   "${SAMPLES_TSV}" \
   "${SLURM_ARRAY_TASK_ID}" \
   "${RESULTS_ROOT}" \

@@ -2,8 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="${SLURM_SUBMIT_DIR:-$SCRIPT_DIR}"
-source "${REPO_DIR}/load_numt_modules.sh"
+source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 # ============================================================
 # Ready-to-use defaults for your Yale HPC layout
@@ -146,8 +145,24 @@ function trim(x){ gsub(/^[[:space:]]+|[[:space:]]+$/, "", x); return x }
   exit 1
 }
 
-whole_ref="${WHOLE_REF_DIR}/${ref_name}.fasta"
-chrm_ref="${CHRM_REF_DIR}/${ref_name}.fasta"
+resolve_ref_fasta() {
+  local ref_name="$1"
+  local ref_dir="$2"
+  local suffix
+  for suffix in ".fa" ".fasta" ".fna"; do
+    if [[ -s "${ref_dir}/${ref_name}${suffix}" ]]; then
+      echo "${ref_dir}/${ref_name}${suffix}"
+      return 0
+    fi
+  done
+  find "$ref_dir" -maxdepth 1 -type f \( \
+    -name "${ref_name}.fa" -o -name "${ref_name}.fasta" -o -name "${ref_name}.fna" -o \
+    -name "${ref_name}*.fa" -o -name "${ref_name}*.fasta" -o -name "${ref_name}*.fna" \
+  \) | head -n 1
+}
+
+whole_ref="$(resolve_ref_fasta "$ref_name" "$WHOLE_REF_DIR")"
+chrm_ref="$(resolve_ref_fasta "$ref_name" "$CHRM_REF_DIR")"
 
 [[ -s "$whole_ref" ]] || { echo "ERROR: whole-genome fasta not found: $whole_ref" >&2; exit 1; }
 [[ -s "$chrm_ref"  ]] || { echo "ERROR: chrM fasta not found: $chrm_ref" >&2; exit 1; }

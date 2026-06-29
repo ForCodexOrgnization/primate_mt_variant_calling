@@ -7,6 +7,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INPUT_DIR="/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/numt_candidates_bed_strict"
 SAMPLES_TSV="/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/human_sample.txt"
 WHOLE_REF_DIR="/nfs/roberts/pi/pi_njl27/lt692/primate_ref_files/whole_genomes_final"
@@ -19,7 +20,7 @@ MIN_ALIGN_LENGTH=50
 MIN_MAPQ=20
 MIN_NREADS=5
 RECURSIVE_FIND=1
-WORKER_SCRIPT="/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/process_numt_candidates_one_ready.sh"
+WORKER_SCRIPT="${SCRIPT_DIR}/process_numt_candidates_one_ready.sh"
 
 usage() {
   cat <<USAGE

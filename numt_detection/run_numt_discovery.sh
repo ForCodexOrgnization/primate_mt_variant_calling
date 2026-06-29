@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="${SLURM_SUBMIT_DIR:-$SCRIPT_DIR}"
-source "${REPO_DIR}/load_numt_modules.sh"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 ########################################
 # Usage
@@ -348,7 +348,7 @@ echo "[$(date)] Step 4 check: BAM + BAI ready"
 ########################################
 echo "[$(date)] Step 5: discovering candidate NUMT sink loci"
 
-python3 discover_numt_sinks.py \
+python3 "${SCRIPT_DIR}/discover_numt_sinks.py" \
   --bam "$NUC_BAM" \
   --sample "$SAMPLE" \
   --min-mapq "$MIN_MAPQ" \
