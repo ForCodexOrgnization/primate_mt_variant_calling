@@ -58,4 +58,8 @@ cd "${NUMT_REPO}"
 [[ -f submit_numt_end2end_array.sh ]] || { echo "ERROR: Missing submit_numt_end2end_array.sh in ${NUMT_REPO}" >&2; exit 1; }
 
 echo "INFO: Wrote NUMT auto config: ${auto_config}" >&2
-bash submit_numt_end2end_array.sh --config "${auto_config}" --concurrent "${CONCURRENT}"
+CONFIG="${auto_config}"
+env -u SLURM_SUBMIT_DIR \
+  bash submit_numt_end2end_array.sh \
+    --config "${CONFIG}" \
+    --concurrent "${CONCURRENT}"
