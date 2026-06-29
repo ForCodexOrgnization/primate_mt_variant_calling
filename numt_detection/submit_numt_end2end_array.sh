@@ -8,7 +8,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${NUMT_SCRIPT_DIR:-}" && -d "${NUMT_SCRIPT_DIR}" ]]; then
+  SCRIPT_DIR="$(cd "${NUMT_SCRIPT_DIR}" && pwd)"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
 source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 usage() {
@@ -61,7 +66,12 @@ N=$(wc -l < "$SAMPLES_TSV")
 [[ "$N" -gt 0 ]] || { echo "ERROR: SAMPLES_TSV is empty: $SAMPLES_TSV" >&2; exit 1; }
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-  sbatch --array=1-${N}%${CONCURRENT} "$0" --config "$CONFIG" --concurrent "$CONCURRENT"
+  sbatch \
+    --array=1-${N}%${CONCURRENT} \
+    --export=ALL,NUMT_SCRIPT_DIR="${SCRIPT_DIR}" \
+    "$0" \
+    --config "$CONFIG" \
+    --concurrent "$CONCURRENT"
   exit 0
 fi
 
