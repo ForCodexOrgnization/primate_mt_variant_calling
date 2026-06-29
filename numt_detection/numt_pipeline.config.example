@@ -1,0 +1,44 @@
+# NUMT pipeline config (recommended for Slurm array mode)
+
+# ---------- Shared parameters ----------
+THREADS=8
+MT_CONTIG=chrM
+MIN_MAPQ_DISCOVERY=20
+MIN_DEPTH=3
+MIN_READS=5
+MIN_LEN=100
+MERGE_GAP_DISCOVERY=50
+PAD=500
+
+MERGE_GAP_BESTHIT=50
+MIN_PIDENT=90
+MIN_ALIGN_LENGTH=50
+MIN_MAPQ_BESTHIT=30
+MIN_NREADS=5
+
+# ---------- Shared reference/resources ----------
+WHOLE_REF_DIR=/path/to/whole_genomes_final
+NUCLEAR_ONLY_REF_DIR=/path/to/nuclear_only_refs
+CHRM_REF_DIR=/path/to/Refseq_chrM
+BESTHIT_OUTDIR=/path/to/primate_results_numt_besthit
+
+# ---------- Slurm array mode (required) ----------
+# 3-column tsv:
+# col1 sample_id, col2 real species, col3 reference species name
+SAMPLES_TSV=/path/to/primate_numt_test_list.txt
+
+CRAM_ROOT_1=/path/to/cram_root_1
+CRAM_ROOT_2=/path/to/cram_root_2
+DISCOVERY_OUTROOT=/path/to/numt_discovery/results
+
+# ---------- Optional: single-sample manual run only ----------
+# Leave empty when using submit_numt_end2end_array.sh
+# SAMPLE=SAMPLE1
+# INPUT_BAM_CRAM=/path/to/sample.cram
+# INPUT_INDEX=/path/to/sample.cram.crai
+# INPUT_BAM_CRAM_ALT=/path/to/alternate/sample.cram
+# INPUT_INDEX_ALT=/path/to/alternate/sample.cram.crai
+# WGS_REF=/path/to/full_reference.fa
+# NUCLEAR_REF=/path/to/nuclear_only.fa
+# MT_LENGTH=16569
+# DISCOVERY_OUTDIR=/path/to/results/SAMPLE1
