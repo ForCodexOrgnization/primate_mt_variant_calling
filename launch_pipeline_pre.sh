@@ -15,6 +15,7 @@ NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_wor
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 
 module load Nextflow/24.10.2
+module load SAMtools/1.21-GCC-13.3.0
 # ==============================================================================
 
 if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
