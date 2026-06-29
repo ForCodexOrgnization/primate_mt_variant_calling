@@ -22,7 +22,7 @@ Usage:
   bash submit_numt_end2end_array.sh --config numt_pipeline.config [--concurrent 50]
 
 Required config keys for array mode:
-  SAMPLES_TSV            # 3-column tsv: sample_id, real_species, ref_species
+  SAMPLES_TSV            # 2- or 3-column tsv: sample_id, species_name[, ref_species]
   CRAM_ROOT_1
   CRAM_ROOT_2
   WHOLE_REF_DIR
@@ -112,7 +112,11 @@ SAMPLE_ID=$(printf '%s\n' "$PARSED_FIELDS" | sed -n '1p')
 REAL_SPECIES=$(printf '%s\n' "$PARSED_FIELDS" | sed -n '2p')
 REF_SPECIES=$(printf '%s\n' "$PARSED_FIELDS" | sed -n '3p')
 [[ -n "$SAMPLE_ID" ]] || { echo "ERROR: empty sample at task ${SLURM_ARRAY_TASK_ID}" >&2; exit 1; }
-[[ -n "$REF_SPECIES" ]] || { echo "ERROR: empty ref species at task ${SLURM_ARRAY_TASK_ID}" >&2; exit 1; }
+[[ -n "$REAL_SPECIES" ]] || { echo "ERROR: empty species at task ${SLURM_ARRAY_TASK_ID}" >&2; exit 1; }
+
+if [[ -z "$REF_SPECIES" ]]; then
+  REF_SPECIES="$REAL_SPECIES"
+fi
 
 resolve_cram_in_root() {
   local sid="$1"; local root="$2"

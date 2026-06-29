@@ -102,7 +102,7 @@ done
 sample_id=$(basename "$BED")
 sample_id=${sample_id%.numt_candidates.bed}
 
-# sample_id in col1, ref_name in col3; support tab/comma/space-delimited sample sheets.
+# sample_id in col1, ref_name in col3 when present or col2 otherwise; support tab/comma/space-delimited sample sheets.
 ref_name=$(awk -v s="$sample_id" '
 function trim(x){ gsub(/^[[:space:]]+|[[:space:]]+$/, "", x); return x }
 {
@@ -134,8 +134,12 @@ function trim(x){ gsub(/^[[:space:]]+|[[:space:]]+$/, "", x); return x }
     }
   }
 
-  if (k >= 3 && f[1] == s) {
-    print f[3]
+  if (k >= 2 && f[1] == s) {
+    if (k >= 3 && f[3] != "") {
+      print f[3]
+    } else {
+      print f[2]
+    }
     exit
   }
 }
