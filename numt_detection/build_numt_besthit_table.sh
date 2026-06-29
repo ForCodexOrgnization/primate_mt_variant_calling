@@ -41,6 +41,7 @@ fi
 BED_IN="$1"
 REF_FA="$2"
 OUT_PREFIX="$3"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ########################################
 # Parameters
@@ -62,12 +63,7 @@ TMP_BODY="${OUT_PREFIX}.numt_vs_chrM.besthit.body.tsv"
 
 
 
-module load SAMtools/1.21-GCC-13.3.0
-module load BEDTools/2.31.1-GCC-13.3.0
-module load miniconda/24.11.3
-
-# source ~/miniconda3/etc/profile.d/conda.sh
-conda activate blast_env
+source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 
 ########################################

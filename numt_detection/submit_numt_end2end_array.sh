@@ -9,9 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="${SLURM_SUBMIT_DIR:-$SCRIPT_DIR}"
-source "${REPO_DIR}/load_numt_modules.sh"
-cd "$REPO_DIR"
+source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 usage() {
   cat <<USAGE
@@ -123,8 +121,25 @@ else
   exit 1
 fi
 
-WGS_REF="${WHOLE_REF_DIR}/${REF_SPECIES}.fasta"
-NUCLEAR_REF="${NUCLEAR_ONLY_REF_DIR}/${REF_SPECIES}.nuclear_only.fa"
+resolve_ref_fasta() {
+  local ref_name="$1"
+  local ref_dir="$2"
+  local suffix
+  for suffix in ".fa" ".fasta" ".fna" ".nuclear_only.fa"; do
+    if [[ -s "${ref_dir}/${ref_name}${suffix}" ]]; then
+      echo "${ref_dir}/${ref_name}${suffix}"
+      return 0
+    fi
+  done
+  find "$ref_dir" -maxdepth 1 -type f \( \
+    -name "${ref_name}.fa" -o -name "${ref_name}.fasta" -o -name "${ref_name}.fna" -o \
+    -name "${ref_name}.nuclear_only.fa" -o -name "${ref_name}*.fa" -o \
+    -name "${ref_name}*.fasta" -o -name "${ref_name}*.fna" \
+  \) | head -n 1
+}
+
+WGS_REF="$(resolve_ref_fasta "$REF_SPECIES" "$WHOLE_REF_DIR")"
+NUCLEAR_REF="$(resolve_ref_fasta "$REF_SPECIES" "$NUCLEAR_ONLY_REF_DIR")"
 [[ -s "$WGS_REF" ]] || { echo "ERROR: WGS ref missing: $WGS_REF" >&2; exit 1; }
 [[ -s "$NUCLEAR_REF" ]] || { echo "ERROR: nuclear ref missing: $NUCLEAR_REF" >&2; exit 1; }
 
@@ -156,5 +171,5 @@ CHRM_REF_DIR=${CHRM_REF_DIR}
 BESTHIT_OUTDIR=${BESTHIT_OUTDIR}
 CFG
 
-bash "${REPO_DIR}/run_numt_end2end.sh" --config "$TMP_CFG"
+bash "${SCRIPT_DIR}/run_numt_end2end.sh" --config "$TMP_CFG"
 rm -f "$TMP_CFG"
