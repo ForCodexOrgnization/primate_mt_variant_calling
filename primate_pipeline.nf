@@ -30,7 +30,7 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         tuple(meta, species, ref_name)
     }
 
-ch_cromwell_conf = file("${baseDir}/cromwell.conf")
+ch_cromwell_conf = file(params.cromwell_config)
 
 // ====================================================================================
 //                                    WORKFLOW
@@ -668,7 +668,6 @@ process RUN_WDL_VARIANT_CALLING {
     #!/bin/bash
     set -e
 
-    # ... (The cat commands for cromwell_options.json and sbatch_throttle.sh are correct and remain unchanged) ...
     cat > cromwell_options.json <<EOF
     {
       "final_workflow_outputs_dir": ".",
@@ -681,33 +680,16 @@ process RUN_WDL_VARIANT_CALLING {
       }
     }
     EOF
-    cat > sbatch_throttle.sh <<'EOS'
-    #!/usr/bin/env bash
-    set -euo pipefail
-    PER_HOUR="\${SUBMITS_PER_HOUR:-180}"
-    (( PER_HOUR > 0 )) || PER_HOUR=180
-    MIN_GAP=\$(( 3600 / PER_HOUR ))
-    STATE_DIR="\${HOME}/.sbatch_rate"
-    LOCK_FILE="\${STATE_DIR}/lock"
-    TS_FILE="\${STATE_DIR}/last_submit.ts"
-    mkdir -p "\${STATE_DIR}"
-    exec 200>"\${LOCK_FILE}"
-    flock 200
-    now=\$(date +%s); last=0
-    [[ -f "\${TS_FILE}" ]] && read -r last < "\${TS_FILE}" || true
-    delta=\$(( now - last ))
-    if (( delta < MIN_GAP )); then
-      sleep \$(( MIN_GAP - delta ))
-    fi
-    date +%s > "\${TS_FILE}"
-    unset SLURM_CONF || true
-    exec sbatch "\$@"
-    EOS
-    chmod +x sbatch_throttle.sh
-
-    export SUBMITS_PER_HOUR="${params.cromwell_submit_rate_limit ?: '180'}"
 
     echo "INFO: Forcing execution with Java from JAVA_HOME: \$JAVA_HOME"
+    echo "INFO: Cromwell config path: ${cromwell_config}"
+    echo "INFO: Cromwell options JSON path: cromwell_options.json"
+    echo "INFO: WDL file path: ${params.wdl_script}"
+    echo "INFO: inputs JSON path: ${wdl_inputs_json}"
+    echo "INFO: Nextflow allocated CPUs: ${task.cpus}"
+    echo "INFO: Nextflow allocated memory: ${task.memory}"
+    echo "INFO: Cromwell backend should run WDL tasks locally within this Nextflow allocation"
+
     "\${JAVA_HOME}/bin/java" -Xmx4G -Dconfig.file=${cromwell_config} \\
          -jar ${params.cromwell_jar} run \\
          ${params.wdl_script} \\
