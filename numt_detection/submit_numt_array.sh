@@ -6,8 +6,8 @@
 #SBATCH -c 8
 #SBATCH --mem=32G
 #SBATCH -t 12:00:00
-#SBATCH -o logs/numtDisc_%A_%a.out
-#SBATCH -e logs/numtDisc_%A_%a.err
+#SBATCH -o log_numt/numtDisc_%A_%a.out
+#SBATCH -e log_numt/numtDisc_%A_%a.err
 #SBATCH --array=1-790%50
 
 set -euo pipefail
@@ -28,7 +28,7 @@ MERGE_GAP=50
 PAD=100
 
 cd "${WORKDIR}"
-mkdir -p logs
+mkdir -p log_numt
 mkdir -p "${RESULTS_ROOT}"
 
 source "${SCRIPT_DIR}/load_numt_modules.sh"

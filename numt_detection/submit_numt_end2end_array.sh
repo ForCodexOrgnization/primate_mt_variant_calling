@@ -3,8 +3,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/numt_e2e_%A_%a.out
-#SBATCH --error=logs/numt_e2e_%A_%a.err
+#SBATCH --output=log_numt/numt_e2e_%A_%a.out
+#SBATCH --error=log_numt/numt_e2e_%A_%a.err
 
 set -euo pipefail
 
@@ -60,7 +60,7 @@ source "$CONFIG"
 : "${BESTHIT_OUTDIR:?missing BESTHIT_OUTDIR in config}"
 
 [[ -s "$SAMPLES_TSV" ]] || { echo "ERROR: samples TSV not found: $SAMPLES_TSV" >&2; exit 1; }
-mkdir -p logs "$DISCOVERY_OUTROOT" "$BESTHIT_OUTDIR"
+mkdir -p log_numt "$DISCOVERY_OUTROOT" "$BESTHIT_OUTDIR"
 
 N=$(wc -l < "$SAMPLES_TSV")
 [[ "$N" -gt 0 ]] || { echo "ERROR: SAMPLES_TSV is empty: $SAMPLES_TSV" >&2; exit 1; }
