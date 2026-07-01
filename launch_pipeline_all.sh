@@ -152,6 +152,15 @@ validate_numt_to_round1() {
     log "NUMT discovery validation passed"
 }
 
+numt_outputs_complete() {
+    local missing=0 sample bed
+    while IFS= read -r sample; do
+        bed="${NUMT_BESTHIT_OUTDIR}/${sample}.highconf_numt.bed"
+        [[ -e "${bed}" ]] || missing=1
+    done < <(read_sample_ids)
+    [[ "${missing}" -eq 0 ]]
+}
+
 validate_round1_to_round2() {
     log "Validating round 1 outputs needed by round 2"
     local missing=0 sample
@@ -198,8 +207,12 @@ pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FUL
 wait_for_job "${pre_job}" preprocess
 validate_pre_to_round1
 
-numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" CONCURRENT="${NUMT_CONCURRENT}")"
-wait_for_job "${numt_job}" numt
+if numt_outputs_complete; then
+    log "Skipping NUMT discovery; all high-confidence NUMT BED outputs already exist under ${NUMT_BESTHIT_OUTDIR}"
+else
+    numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" CONCURRENT="${NUMT_CONCURRENT}")"
+    wait_for_job "${numt_job}" numt
+fi
 validate_numt_to_round1
 
 round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}")"

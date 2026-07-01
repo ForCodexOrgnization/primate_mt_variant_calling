@@ -81,6 +81,19 @@ if [[ ! -s "${clean_samples}" ]]; then
   exit 1
 fi
 
+missing_numt=0
+while IFS=$'\t' read -r sample_id _; do
+  if [[ ! -e "${BESTHIT_OUTDIR}/${sample_id}.highconf_numt.bed" ]]; then
+    missing_numt=1
+    break
+  fi
+done < "${clean_samples}"
+
+if [[ "${missing_numt}" -eq 0 ]]; then
+  echo "INFO: All NUMT high-confidence BED outputs already exist under ${BESTHIT_OUTDIR}; skipping NUMT discovery submission." >&2
+  exit 0
+fi
+
 auto_config="$(mktemp "${DISCOVERY_OUTROOT}/numt_pipeline.auto.XXXXXX.config")"
 
 cat > "${auto_config}" <<CONFIG
