@@ -153,9 +153,9 @@ fi
 [[ -s "$INPUT" ]] || { echo "ERROR: input file not found or empty: $INPUT" >&2; exit 1; }
 [[ -s "$INDEX" ]] || { echo "ERROR: index file not found or empty: $INDEX" >&2; exit 1; }
 
-mkdir -p "$OUTDIR"/{tmp,logs,intermediate}
+mkdir -p "$OUTDIR"/{tmp,log_numt,intermediate}
 
-LOG="$OUTDIR/logs/${SAMPLE}.numt_discovery.log"
+LOG="$OUTDIR/log_numt/${SAMPLE}.numt_discovery.log"
 exec > >(tee -a "$LOG") 2>&1
 
 echo "[$(date)] Starting NUMT discovery for $SAMPLE"

@@ -3,7 +3,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/numt_besthit_%A_%a.log
+#SBATCH --output=log_numt/numt_besthit_%A_%a.log
 
 set -euo pipefail
 
@@ -68,7 +68,7 @@ done
 [[ -d "$CHRM_REF_DIR" ]] || { echo "ERROR: chrM-ref dir not found: $CHRM_REF_DIR" >&2; exit 1; }
 [[ -x "$WORKER_SCRIPT" ]] || { echo "ERROR: worker script not executable: $WORKER_SCRIPT" >&2; exit 1; }
 
-mkdir -p "$OUTDIR" logs
+mkdir -p "$OUTDIR" log_numt
 
 # 按 samples.tsv 行数决定 array 大小
 N=$(wc -l < "$SAMPLES_TSV")
