@@ -51,12 +51,20 @@ ch_samples = Channel.fromPath(params.sample_tsv)
 
         def round1_dir      = file("${params.outdir}/${sample_id}/round_1")
         def vc_dir          = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
-        def numt_vc_vcf     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz")
-        def numt_vc_tbi     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz.tbi")
-        def decoy_interval  = file("${params.outdir}/${sample_id}/round_1/numt_decoy_ref/${sample_id}.decoy_numt.interval_list")
+        def numt_vc_vcf        = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz")
+        def numt_vc_tbi        = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz.tbi")
+        def numt_consensus_vcf = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.pass.split.vcf.gz")
+        def numt_consensus_tbi = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.pass.split.vcf.gz.tbi")
+        def consensus_numt_fa  = file("${params.outdir}/${sample_id}/round_1/consensus_numt_ref/${sample_id}.consensus_numt.fa")
+        def consensus_numt_fai = file("${params.outdir}/${sample_id}/round_1/consensus_numt_ref/${sample_id}.consensus_numt.fa.fai")
+        def decoy_interval     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_ref/${sample_id}.decoy_numt.interval_list")
 
-        if (round1_dir.exists() && vc_dir.exists() && numt_vc_vcf.exists() && numt_vc_tbi.exists() && decoy_interval.exists()) {
-            log.info "SKIP completed sample ${sample_id}: existing mtDNA outputs plus ${numt_vc_vcf}, ${numt_vc_tbi}, and ${decoy_interval}"
+        if (round1_dir.exists() && vc_dir.exists() &&
+            numt_vc_vcf.exists() && numt_vc_tbi.exists() &&
+            numt_consensus_vcf.exists() && numt_consensus_tbi.exists() &&
+            consensus_numt_fa.exists() && consensus_numt_fai.exists() &&
+            decoy_interval.exists()) {
+            log.info "SKIP completed sample ${sample_id}: existing mtDNA outputs, raw NUMT VCF, filtered PASS NUMT VCF, consensus NUMT FASTA, and decoy interval"
             return null
         }
 
@@ -84,7 +92,7 @@ workflow {
 
     ch_numt_call_input = REALIGN_TO_DECOY.out.realign_bam.join(PREPARE_DECOY_REFERENCE.out.decoy_ref_for_numt_calling, by: [0,1,2])
     CALL_NUMT_VARIANTS_DECOY(ch_numt_call_input)
-    ch_consensus_numt_input = PREPARE_DECOY_REFERENCE.out.original_numt_fa.join(CALL_NUMT_VARIANTS_DECOY.out.numt_vcf, by: [0,1,2])
+    ch_consensus_numt_input = PREPARE_DECOY_REFERENCE.out.original_numt_fa.join(CALL_NUMT_VARIANTS_DECOY.out.numt_consensus_vcf, by: [0,1,2])
     GENERATE_CONSENSUS_NUMT_FASTA(ch_consensus_numt_input)
 
     EXTRACT_FINAL_CHRM_BAM(REALIGN_TO_DECOY.out.realign_bam)
@@ -498,16 +506,31 @@ process CALL_NUMT_VARIANTS_DECOY {
     tuple val(meta), val(species_name), val(ref_name),
           path("${meta.id}.numt_decoy.raw.vcf.gz"),
           path("${meta.id}.numt_decoy.raw.vcf.gz.tbi"),
-          emit: numt_vcf
+          emit: numt_raw_vcf
+
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.numt_decoy.pass.split.vcf.gz"),
+          path("${meta.id}.numt_decoy.pass.split.vcf.gz.tbi"),
+          emit: numt_consensus_vcf
+
+    path("${meta.id}.numt_decoy.snps.vcf.gz"), optional: true, emit: numt_snps_vcf
+    path("${meta.id}.numt_decoy.indels.vcf.gz"), optional: true, emit: numt_indels_vcf
+    path("${meta.id}.numt_decoy.snps.filtered.vcf.gz"), optional: true, emit: numt_snps_filtered_vcf
+    path("${meta.id}.numt_decoy.indels.filtered.vcf.gz"), optional: true, emit: numt_indels_filtered_vcf
+    path("${meta.id}.numt_decoy.filtered.vcf.gz"), optional: true, emit: numt_filtered_vcf
+    path("${meta.id}.numt_decoy.pass.vcf.gz"), optional: true, emit: numt_pass_vcf
 
     // Publish the exact decoy-coordinate interval list next to the VCF as a
     // visible replacement for the removed WDL nuc_interval_list input.
     path("${meta.id}.decoy_numt.interval_list"), emit: numt_interval_list
 
     script:
+    def hc_dp_lower_bound = params.hc_dp_lower_bound ?: 10
     """
     #!/usr/bin/env bash
     set -euo pipefail
+
+    HC_DP_LOWER_BOUND="${hc_dp_lower_bound}"
 
     JAVA_BIN="\${JAVA_HOME:-}/bin/java"
     if [[ ! -x "\$JAVA_BIN" ]]; then
@@ -526,14 +549,14 @@ process CALL_NUMT_VARIANTS_DECOY {
     [[ -s ${decoy_numt_interval_list} ]] || { echo "ERROR: missing decoy NUMT interval list: ${decoy_numt_interval_list}" >&2; exit 1; }
 
     if [[ \$(grep -vc '^@' ${decoy_numt_interval_list}) -eq 0 ]]; then
-        echo "[INFO] No NUMT intervals in decoy reference; creating empty indexed VCF." >&2
+        echo "[INFO] No NUMT intervals in decoy reference; creating empty indexed raw and PASS split VCFs." >&2
         python3 - <<'PY_EMPTY_VCF'
 from pathlib import Path
 import zlib
 
 sample = "${meta.id}"
 fai = Path("${decoy_fai}")
-out = Path(f"{sample}.numt_decoy.raw.vcf.gz")
+outputs = [Path(f"{sample}.numt_decoy.raw.vcf.gz"), Path(f"{sample}.numt_decoy.pass.split.vcf.gz")]
 
 lines = ["##fileformat=VCFv4.2", "##source=CALL_NUMT_VARIANTS_DECOY"]
 with fai.open() as handle:
@@ -544,8 +567,6 @@ with fai.open() as handle:
 lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
 payload = ("\n".join(lines) + "\n").encode()
 
-# Write a minimal BGZF stream so GATK can create an index without requiring
-# external HTSlib compression/indexing binaries on the cluster node.
 def bgzf_block(data: bytes) -> bytes:
     compressor = zlib.compressobj(level=6, method=zlib.DEFLATED, wbits=-15)
     compressed = compressor.compress(data) + compressor.flush()
@@ -554,16 +575,20 @@ def bgzf_block(data: bytes) -> bytes:
     trailer = (zlib.crc32(data) & 0xffffffff).to_bytes(4, "little") + (len(data) & 0xffffffff).to_bytes(4, "little")
     return header + compressed + trailer
 
-# Standard 28-byte BGZF EOF marker.
 eof = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
-with out.open("wb") as handle:
-    for offset in range(0, len(payload), 65280):
-        handle.write(bgzf_block(payload[offset:offset + 65280]))
-    handle.write(eof)
+for out in outputs:
+    with out.open("wb") as handle:
+        for offset in range(0, len(payload), 65280):
+            handle.write(bgzf_block(payload[offset:offset + 65280]))
+        handle.write(eof)
 PY_EMPTY_VCF
-        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
-          -I ${meta.id}.numt_decoy.raw.vcf.gz
-        [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: GATK did not create ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+        for vcf in ${meta.id}.numt_decoy.raw.vcf.gz ${meta.id}.numt_decoy.pass.split.vcf.gz; do
+          "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile -I "\$vcf"
+          [[ -s "\${vcf}.tbi" ]] || { echo "ERROR: GATK did not create \${vcf}.tbi" >&2; exit 1; }
+        done
+        echo "[INFO] NUMT raw variants: 0"
+        echo "[INFO] NUMT PASS variants used for consensus: 0"
+        echo "[INFO] hc_dp_lower_bound: \${HC_DP_LOWER_BOUND}"
         exit 0
     fi
 
@@ -575,13 +600,76 @@ PY_EMPTY_VCF
       -O ${meta.id}.numt_decoy.raw.vcf.gz \
       --create-output-variant-index true \
       --max-reads-per-alignment-start 75 \
-      --annotation StrandBiasBySample
+      --max-mnp-distance 0 \
+      --annotation StrandBiasBySample \
+      -G StandardAnnotation \
+      -G StandardHCAnnotation \
+      -GQB 10 -GQB 20 -GQB 30 -GQB 40 -GQB 50 -GQB 60 -GQB 70 -GQB 80 -GQB 90
 
-    if [[ ! -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]]; then
-        "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile \
-          -I ${meta.id}.numt_decoy.raw.vcf.gz
-    fi
+    [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile -I ${meta.id}.numt_decoy.raw.vcf.gz
     [[ -s ${meta.id}.numt_decoy.raw.vcf.gz.tbi ]] || { echo "ERROR: missing HaplotypeCaller VCF index: ${meta.id}.numt_decoy.raw.vcf.gz.tbi" >&2; exit 1; }
+
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} SelectVariants -R ${decoy_fa} -V ${meta.id}.numt_decoy.raw.vcf.gz -select-type SNP -O ${meta.id}.numt_decoy.snps.vcf.gz
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} SelectVariants -R ${decoy_fa} -V ${meta.id}.numt_decoy.raw.vcf.gz -select-type INDEL -O ${meta.id}.numt_decoy.indels.vcf.gz
+
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} VariantFiltration \
+      -R ${decoy_fa} -V ${meta.id}.numt_decoy.snps.vcf.gz -O ${meta.id}.numt_decoy.snps.filtered.vcf.gz \
+      -filter "QD < 2.0" --filter-name "QD2" \
+      -filter "QUAL < 30.0" --filter-name "QUAL30" \
+      -filter "SOR > 3.0" --filter-name "SOR3" \
+      -filter "FS > 60.0" --filter-name "FS60" \
+      -filter "MQ < 40.0" --filter-name "MQ40" \
+      -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+      -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" \
+      --genotype-filter-expression "isHet == 1" --genotype-filter-name "isHetFilt" \
+      --genotype-filter-expression "isHomRef == 1" --genotype-filter-name "isHomRefFilt" \
+      --genotype-filter-expression "DP < \${HC_DP_LOWER_BOUND}" --genotype-filter-name "genoDP\${HC_DP_LOWER_BOUND}"
+
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} VariantFiltration \
+      -R ${decoy_fa} -V ${meta.id}.numt_decoy.indels.vcf.gz -O ${meta.id}.numt_decoy.indels.filtered.vcf.gz \
+      -filter "QD < 2.0" --filter-name "QD2" \
+      -filter "QUAL < 30.0" --filter-name "QUAL30" \
+      -filter "FS > 200.0" --filter-name "FS200" \
+      -filter "SOR > 10.0" --filter-name "SOR10" \
+      -filter "ReadPosRankSum < -20.0" --filter-name "ReadPosRankSum-20" \
+      --genotype-filter-expression "isHet == 1" --genotype-filter-name "isHetFilt" \
+      --genotype-filter-expression "isHomRef == 1" --genotype-filter-name "isHomRefFilt" \
+      --genotype-filter-expression "DP < \${HC_DP_LOWER_BOUND}" --genotype-filter-name "genoDP\${HC_DP_LOWER_BOUND}"
+
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} MergeVcfs \
+      -I ${meta.id}.numt_decoy.snps.filtered.vcf.gz \
+      -I ${meta.id}.numt_decoy.indels.filtered.vcf.gz \
+      -O ${meta.id}.numt_decoy.filtered.vcf.gz
+
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} SelectVariants \
+      -R ${decoy_fa} \
+      -V ${meta.id}.numt_decoy.filtered.vcf.gz \
+      --exclude-filtered \
+      --set-filtered-gt-to-nocall \
+      --exclude-non-variants \
+      -O ${meta.id}.numt_decoy.pass.vcf.gz
+
+    "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} LeftAlignAndTrimVariants \
+      -R ${decoy_fa} \
+      -V ${meta.id}.numt_decoy.pass.vcf.gz \
+      -O ${meta.id}.numt_decoy.pass.split.vcf.gz \
+      --split-multi-allelics \
+      --dont-trim-alleles \
+      --keep-original-ac \
+      --create-output-variant-index true
+
+    [[ -s ${meta.id}.numt_decoy.pass.split.vcf.gz ]] || { echo "ERROR: missing filtered PASS split NUMT VCF" >&2; exit 1; }
+    if [[ ! -s ${meta.id}.numt_decoy.pass.split.vcf.gz.tbi ]]; then
+      "\$JAVA_BIN" -Xmx4G -jar ${params.gatk_jar} IndexFeatureFile -I ${meta.id}.numt_decoy.pass.split.vcf.gz
+    fi
+    [[ -s ${meta.id}.numt_decoy.pass.split.vcf.gz.tbi ]] || { echo "ERROR: missing filtered PASS split NUMT VCF index" >&2; exit 1; }
+
+    raw_n=\$(bcftools view -H ${meta.id}.numt_decoy.raw.vcf.gz 2>/dev/null | wc -l | sed 's/^ *//g' || echo 0)
+    pass_n=\$(bcftools view -H ${meta.id}.numt_decoy.pass.split.vcf.gz 2>/dev/null | wc -l | sed 's/^ *//g' || echo 0)
+
+    echo "[INFO] NUMT raw variants: \${raw_n}"
+    echo "[INFO] NUMT PASS variants used for consensus: \${pass_n}"
+    echo "[INFO] hc_dp_lower_bound: \${HC_DP_LOWER_BOUND}"
     """
 }
 
@@ -615,6 +703,9 @@ sample = "${meta.id}"
 original_fa = Path("${original_numt_fa}")
 numt_vcf = Path("${numt_vcf}")
 out_fa = Path(f"{sample}.consensus_numt.fa")
+
+print("[INFO] Building consensus NUMT from mtSwirl-like filtered PASS NUMT VCF", file=sys.stderr)
+print(f"[INFO] input_vcf = {numt_vcf}", file=sys.stderr)
 
 def open_text(path):
     path = Path(path)
