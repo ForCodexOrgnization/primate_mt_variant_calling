@@ -117,6 +117,7 @@ cd "${NUMT_DIR}"
 
 echo "INFO: Wrote NUMT auto config: ${auto_config}" >&2
 CONFIG="${auto_config}"
+# Round 1 NUMT consensus filtering defaults to --hc_dp_lower_bound 10 in nextflow.config.
 env -u SLURM_SUBMIT_DIR \
   bash submit_numt_end2end_array.sh \
     --config "${CONFIG}" \
