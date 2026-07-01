@@ -902,7 +902,9 @@ PY_INTERVALS
 process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
     tag { "Realign reads to standard/shifted consensus and extract chrM-assigned reads for ${meta.id}" }
     label 'alignment_related'
-    publishDir "${params.outdir}/${meta.id}/round_2/round2_alignment_consensus", mode: 'copy', pattern: "*.{bam,bai,txt,log}"
+    publishDir "${params.outdir}/${meta.id}/round_2/round2_alignment_consensus",
+        mode: 'copy',
+        pattern: "*.{bam,bai,txt,log,tsv}"
 
     input:
     tuple val(meta), val(species_name), val(ref_name), path(round1_bam),
@@ -924,6 +926,13 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
           path("${meta.id}.shifted.chrM_assigned.bam"),
           path("${meta.id}.shifted.chrM_assigned.bam.bai"),
           emit: assigned_bams
+
+    tuple val(meta), val(species_name), val(ref_name),
+          path("${meta.id}.standard.selfref.md.bam"),
+          path("${meta.id}.standard.selfref.md.bai"),
+          path("${meta.id}.shifted.selfref.md.bam"),
+          path("${meta.id}.shifted.selfref.md.bai"),
+          emit: diagnostic_selfref_bams
 
     script:
     """
@@ -986,6 +995,14 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
             CREATE_INDEX=true \
             VALIDATION_STRINGENCY=LENIENT \
             ASSUME_SORT_ORDER=coordinate
+
+        # Ensure the diagnostic self-reference BAM index uses the formal .md.bai
+        # filename emitted and published by this process.
+        rm -f "\${SAMPLE_ID}.\${branch}.selfref.md.bai"
+        samtools index -@ "\${THREADS}" \
+            -o "\${SAMPLE_ID}.\${branch}.selfref.md.bai" \
+            "\${SAMPLE_ID}.\${branch}.selfref.md.bam"
+        samtools quickcheck -v "\${SAMPLE_ID}.\${branch}.selfref.md.bam"
 
         # mtSwirl-like: after competitive mapping/preprocessing, keep reads mapping to chrM.
         # Do NOT require proper pair or mate-on-same-contig here.
