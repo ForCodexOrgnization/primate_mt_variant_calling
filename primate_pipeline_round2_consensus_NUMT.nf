@@ -2103,7 +2103,7 @@ def cigar_base(pos, rec):
     if len(fields)<11: return None, {}
     import re
     ref=int(fields[3]); read=0; seq=fields[9]
-    for n,op in re.findall(r'(\d+)([MIDNSHP=X])', fields[5]):
+    for n,op in re.findall(r'(\\d+)([MIDNSHP=X])', fields[5]):
         n=int(n)
         if op in 'M=X':
             if ref <= pos < ref+n:
