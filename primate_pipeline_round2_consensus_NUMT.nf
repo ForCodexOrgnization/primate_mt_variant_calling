@@ -117,7 +117,8 @@ workflow {
     // original mt reference coordinates, using the exact SNV/indel set that
     // was used to build the consensus reference.
     ch_liftback_inputs = RUN_WDL_VARIANT_CALLING.out.cromwell_out.join(BUILD_CONSENSUS_REFERENCE.out.consensus_ref, by: [0,1,2])
-    LIFTBACK_ROUND2_VCF_TO_ORIGINAL(ch_liftback_inputs)
+    ch_liftback_inputs_with_bam = ch_liftback_inputs.join(REALIGN_TO_CONSENSUS_ASSIGNED_BAMS.out.assigned_bams, by: [0,1,2])
+    LIFTBACK_ROUND2_VCF_TO_ORIGINAL(ch_liftback_inputs_with_bam)
 }
 
 workflow.onComplete {
@@ -1004,8 +1005,11 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
             "\${SAMPLE_ID}.\${branch}.selfref.md.bam"
         samtools quickcheck -v "\${SAMPLE_ID}.\${branch}.selfref.md.bam"
 
-        # mtSwirl-like: after competitive mapping/preprocessing, keep reads mapping to chrM.
+        # mtSwirl-like: after competitive mapping/preprocessing, keep primary reads mapping to chrM.
         # Do NOT require proper pair or mate-on-same-contig here.
+        # Remove read pairs where either mate has XS > AS, because that indicates the
+        # alternative alignment score exceeds the primary chrM alignment score. If one
+        # mate fails this check, drop the whole QNAME before variant calling.
         # Emit a chrM-only BAM. In addition to dropping NUMT @SQ lines, normalize
         # mate fields that still point to NUMT contigs; otherwise the BAM can carry
         # mate reference IDs that are invalid under the chrM-only header and fail
@@ -1030,8 +1034,25 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
                   \$9=0;
                 }
                 print
-              }' \
+              }' > "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam"
+
+        awk 'BEGIN{OFS="\\t"} /^@/{next} {as=""; xs=""; for(i=12;i<=NF;i++){if(\$i ~ /^AS:i:/) as=substr(\$i,6)+0; if(\$i ~ /^XS:i:/) xs=substr(\$i,6)+0} if(as != "" && xs != "" && xs > as) print \$1}' \
+            "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam" | sort -u > "\${SAMPLE_ID}.\${branch}.XS_gt_AS.drop_qnames.txt"
+
+        awk 'BEGIN{while((getline q < ARGV[1]) > 0) drop[q]=1; ARGV[1]=""; OFS="\\t"} /^@/{print; next} !drop[\$1]{print}' \
+            "\${SAMPLE_ID}.\${branch}.XS_gt_AS.drop_qnames.txt" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam" \
           | samtools view -@ "\${THREADS}" -b -o "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam" -
+
+        {
+          echo -e "metric\\tvalue"
+          before_count=\$(awk 'BEGIN{n=0} !/^@/{n++} END{print n}' "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam")
+          dropped_qnames=\$(wc -l < "\${SAMPLE_ID}.\${branch}.XS_gt_AS.drop_qnames.txt")
+          after_count=\$(samtools view -c "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam")
+          echo -e "primary_chrM_records_before_XS_gt_AS_pair_filter\\t\${before_count}"
+          echo -e "qnames_removed_by_XS_gt_AS_pair_filter\\t\${dropped_qnames}"
+          echo -e "primary_chrM_records_after_XS_gt_AS_pair_filter\\t\${after_count}"
+        } > "\${SAMPLE_ID}.\${branch}.chrM_assigned.XS_gt_AS_filter_metrics.tsv"
 
         samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
         samtools quickcheck -v "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
@@ -1327,7 +1348,8 @@ process LIFTBACK_ROUND2_VCF_TO_ORIGINAL {
           path(selfref_shifted_fa), path(selfref_shifted_fai), path(selfref_shifted_dict),
           path(selfref_shifted_amb), path(selfref_shifted_ann), path(selfref_shifted_bwt), path(selfref_shifted_pac), path(selfref_shifted_sa),
           path(non_control_interval), path(control_shifted_interval), path(shift_back_chain),
-          path(consensus_sites_vcf), path(consensus_sites_tbi)
+          path(consensus_sites_vcf), path(consensus_sites_tbi),
+          path(std_chrM_bam), path(std_chrM_bai), path(shift_chrM_bam), path(shift_chrM_bai)
 
     output:
     tuple val(meta), val(species_name), val(ref_name),
@@ -2046,7 +2068,95 @@ PY_MERGE_CONSENSUS_SITES
         -f "\${SAMPLE_ID}.original_mt.fa" \
         -m-any \
         "\${SAMPLE_ID}.round2.original_coords.with_consensus_basis.sorted.vcf.gz" \
-        -Oz -o "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
+        -Oz -o "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_ambiguity.vcf.gz"
+
+    # Add read-level ambiguity metrics for ALT-supporting reads from the filtered
+    # standard chrM-assigned BAM.  SNVs are evaluated directly at the lifted-back
+    # position; non-SNV records retain the same fields with zero ALT-support when
+    # a per-read allele cannot be represented as a single base.
+    cat > add_ambiguity_metrics.py <<'PY_AMBIGUITY'
+import subprocess, sys
+bam = sys.argv[1]
+metric_headers = [
+('alt_support_reads','1','Integer','ALT-supporting reads inspected in the chrM BAM'),
+('alt_reads_with_AS','1','Integer','ALT-supporting reads carrying an AS tag'),
+('alt_reads_with_XS','1','Integer','ALT-supporting reads carrying an XS tag'),
+('alt_reads_with_both_AS_XS','1','Integer','ALT-supporting reads carrying both AS and XS tags'),
+('alt_XS_ge_AS_n','1','Integer','ALT-supporting reads with XS >= AS'),
+('alt_XS_ge_AS_pct','1','Float','Percentage of ALT-supporting reads with XS >= AS'),
+('alt_XS_eq_AS_n','1','Integer','ALT-supporting reads with XS == AS'),
+('alt_XS_gt_AS_n','1','Integer','ALT-supporting reads with XS > AS'),
+('alt_reads_without_XS_ge_AS','1','Integer','ALT-supporting reads without XS >= AS'),
+]
+
+def tags(fields):
+    d={}
+    for x in fields[11:]:
+        p=x.split(':',2)
+        if len(p)==3 and p[1]=='i':
+            try: d[p[0]]=int(p[2])
+            except ValueError: pass
+    return d
+
+def cigar_base(pos, rec):
+    fields=rec.rstrip('\n').split('\t')
+    if len(fields)<11: return None, {}
+    import re
+    ref=int(fields[3]); read=0; seq=fields[9]
+    for n,op in re.findall(r'(\\d+)([MIDNSHP=X])', fields[5]):
+        n=int(n)
+        if op in 'M=X':
+            if ref <= pos < ref+n:
+                idx=read+(pos-ref)
+                return (seq[idx].upper() if idx < len(seq) else None), tags(fields)
+            ref += n; read += n
+        elif op in 'DN':
+            ref += n
+        elif op in 'IS':
+            read += n
+    return None, tags(fields)
+
+def metrics(chrom,pos,ref,alt):
+    c={k:0 for k in ['support','as','xs','both','ge','eq','gt']}
+    if len(ref)!=1 or len(alt)!=1: return c
+    region=f'{chrom}:{pos}-{pos}'
+    try:
+        out=subprocess.check_output(['samtools','view',bam,region], text=True)
+    except subprocess.CalledProcessError:
+        out=''
+    for rec in out.splitlines():
+        base,t=cigar_base(pos, rec)
+        if base != alt.upper(): continue
+        c['support']+=1
+        has_as='AS' in t; has_xs='XS' in t
+        c['as']+=has_as; c['xs']+=has_xs; c['both']+=(has_as and has_xs)
+        if has_as and has_xs:
+            c['ge'] += t['XS'] >= t['AS']; c['eq'] += t['XS'] == t['AS']; c['gt'] += t['XS'] > t['AS']
+    return c
+
+for line in sys.stdin:
+    if line.startswith('##'):
+        sys.stdout.write(line); continue
+    if line.startswith('#CHROM'):
+        for mid,num,typ,desc in metric_headers:
+            print(f'##INFO=<ID={mid},Number={num},Type={typ},Description="{desc}">')
+        sys.stdout.write(line); continue
+    f=line.rstrip('\n').split('\t')
+    if len(f)<8: continue
+    chrom,pos,ref,alt=f[0],int(f[1]),f[3],f[4].split(',')[0]
+    m=metrics(chrom,pos,ref,alt)
+    pct=(100.0*m['ge']/m['support']) if m['support'] else 0.0
+    vals=[f'alt_support_reads={m["support"]}',f'alt_reads_with_AS={m["as"]}',f'alt_reads_with_XS={m["xs"]}',f'alt_reads_with_both_AS_XS={m["both"]}',f'alt_XS_ge_AS_n={m["ge"]}',f'alt_XS_ge_AS_pct={pct:.6f}',f'alt_XS_eq_AS_n={m["eq"]}',f'alt_XS_gt_AS_n={m["gt"]}',f'alt_reads_without_XS_ge_AS={m["support"]-m["ge"]}']
+    f[7] = (';'.join([f[7]] + vals) if f[7] not in ('','.') else ';'.join(vals))
+    print('\t'.join(f))
+PY_AMBIGUITY
+
+    bcftools view "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_ambiguity.vcf.gz" \
+      | python3 add_ambiguity_metrics.py "${std_chrM_bam}" \
+      > "\${SAMPLE_ID}.round2.original_coords.clean.final.split.with_ambiguity.vcf"
+
+    bgzip -f "\${SAMPLE_ID}.round2.original_coords.clean.final.split.with_ambiguity.vcf"
+    mv "\${SAMPLE_ID}.round2.original_coords.clean.final.split.with_ambiguity.vcf.gz" "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
 
     tabix -p vcf -f "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
 
