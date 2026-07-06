@@ -26,3 +26,20 @@ The default genotype depth lower bound is 10 and can be configured when launchin
 ```bash
 --hc_dp_lower_bound 10
 ```
+
+## Round 2 chrM-assigned BAM ambiguity filtering
+
+Round 2 keeps the existing mtSwirl-like preprocessing: FASTQ is regenerated from the round 1 candidate BAM, reads are competitively realigned to the standard and shifted chrM+NUMT self-references, duplicates are marked, and primary chrM alignments are written to chrM-only BAMs.
+
+The QNAME-level ambiguity filter for those final chrM-assigned BAMs is controlled with:
+
+```bash
+--round2_chrm_assignment_filter 1
+```
+
+Available settings:
+
+1. `1` (default): enable filtering. Remove a whole QNAME if any retained chrM primary record has `XS > AS`; remove `AS > XS` records and their QNAME mates when the mate is missing from the retained chrM-primary set or the mate lacks either `AS` or `XS`; and remove partial `XS == AS` ambiguous records and their mates when the mate is missing, lacks either `AS` or `XS`, or has `XS >= AS`.
+2. `2`: disable this filter and pass retained primary chrM alignments through to the final chrM-assigned BAM.
+
+Each branch writes `*.chrM_assignment_filter.metrics.tsv`, `*.chrM_assignment_filter.drop_qnames.txt`, and `*.chrM_assignment_filter.drop_reasons.tsv` next to the round 2 alignment outputs. When filtering is disabled, the drop files are still emitted but contain no dropped QNAMEs.
