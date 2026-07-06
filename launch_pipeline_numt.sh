@@ -12,7 +12,9 @@ set -euo pipefail
 #   FULL_SAMPLE_LIST, PRE_OUTPUT_DIR, GLOBAL_REF_DIR,
 #   NUCLEAR_ONLY_REF_DIR, REF_DIR, DISCOVERY_OUTROOT, BESTHIT_OUTDIR
 # Optional:
-#   CONCURRENT (default: 2)
+#   BATCH_SIZE (accepted for launch_pipeline_all.sh interface consistency; NUMT array remains per-sample)
+#   CONCURRENT_BATCHES (default: 2; used as CONCURRENT fallback)
+#   CONCURRENT (defaults to CONCURRENT_BATCHES)
 #
 # Reference notes:
 #   GLOBAL_REF_DIR is the whole-genome reference directory.
@@ -38,7 +40,9 @@ NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:?Set NUCLEAR_ONLY_REF_DIR to nuclea
 REF_DIR="${REF_DIR:?Set REF_DIR to chrM reference directory}"
 DISCOVERY_OUTROOT="${DISCOVERY_OUTROOT:?Set DISCOVERY_OUTROOT for NUMT discovery outputs}"
 BESTHIT_OUTDIR="${BESTHIT_OUTDIR:?Set BESTHIT_OUTDIR for high-confidence NUMT BED outputs}"
-CONCURRENT="${CONCURRENT:-2}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
+CONCURRENT="${CONCURRENT:-${CONCURRENT_BATCHES}}"
 
 [[ -d "${NUMT_DIR}" ]] || { echo "ERROR: bundled numt_detection directory does not exist: ${NUMT_DIR}" >&2; exit 1; }
 [[ -f "${FULL_SAMPLE_LIST}" ]] || { echo "ERROR: FULL_SAMPLE_LIST does not exist: ${FULL_SAMPLE_LIST}" >&2; exit 1; }
@@ -116,6 +120,8 @@ cd "${NUMT_DIR}"
 [[ -f submit_numt_end2end_array.sh ]] || { echo "ERROR: Missing submit_numt_end2end_array.sh in ${NUMT_DIR}" >&2; exit 1; }
 
 echo "INFO: Wrote NUMT auto config: ${auto_config}" >&2
+echo "INFO: NUMT discovery uses one sample per array task; BATCH_SIZE=${BATCH_SIZE} is accepted for shared launcher configuration but not used for batching." >&2
+echo "INFO: Submitting NUMT discovery with CONCURRENT=${CONCURRENT} sample tasks." >&2
 CONFIG="${auto_config}"
 # Round 1 NUMT consensus filtering defaults to --hc_dp_lower_bound 10 in nextflow.config.
 env -u SLURM_SUBMIT_DIR \

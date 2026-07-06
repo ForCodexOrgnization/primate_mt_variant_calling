@@ -39,7 +39,9 @@ NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
 REF_DIR="${REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
 GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
 NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/nuclear_only_refs}"
-NUMT_CONCURRENT="${NUMT_CONCURRENT:-${CONCURRENT:-2}}"
+BATCH_SIZE="${BATCH_SIZE:-5}"
+CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
+NUMT_CONCURRENT="${NUMT_CONCURRENT:-${CONCURRENT:-${CONCURRENT_BATCHES}}}"
 
 POLL_SECONDS="${POLL_SECONDS:-120}"
 LOG_DIR="${LOG_DIR:-log_all}"
@@ -202,24 +204,27 @@ log "NUMT best-hit BED dir: ${NUMT_BESTHIT_OUTDIR}"
 log "NUMT global reference dir: ${GLOBAL_REF_DIR}"
 log "NUMT nuclear-only reference dir: ${NUCLEAR_ONLY_REF_DIR}"
 log "NUMT chrM reference dir: ${REF_DIR}"
+log "Batch size: ${BATCH_SIZE}"
+log "Concurrent batches: ${CONCURRENT_BATCHES}"
+log "NUMT concurrent samples: ${NUMT_CONCURRENT}"
 
-pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${PRE_OUTPUT_DIR}")"
+pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}")"
 wait_for_job "${pre_job}" preprocess
 validate_pre_to_round1
 
 if numt_outputs_complete; then
     log "Skipping NUMT discovery; all high-confidence NUMT BED outputs already exist under ${NUMT_BESTHIT_OUTDIR}"
 else
-    numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" CONCURRENT="${NUMT_CONCURRENT}")"
+    numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}" CONCURRENT="${NUMT_CONCURRENT}")"
     wait_for_job "${numt_job}" numt
 fi
 validate_numt_to_round1
 
-round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}")"
+round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}")"
 wait_for_job "${round1_job}" round1
 validate_round1_to_round2
 
-round2_job="$(submit_step round2 "${ROUND2_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}")"
+round2_job="$(submit_step round2 "${ROUND2_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}")"
 wait_for_job "${round2_job}" round2
 validate_round2_final
 
