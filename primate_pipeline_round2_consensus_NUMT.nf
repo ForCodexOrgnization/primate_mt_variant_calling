@@ -43,6 +43,10 @@ params.round1_consensus_numt_suffix = params.round1_consensus_numt_suffix ?: '.c
 params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_variant_calling'
 params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.raw.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
+params.round2_chrm_assignment_filter = (params.round2_chrm_assignment_filter ?: 1) as Integer
+if (!(params.round2_chrm_assignment_filter in [1, 2])) {
+    error "Invalid --round2_chrm_assignment_filter=${params.round2_chrm_assignment_filter}; choose 1 (filter) or 2 (no filter)"
+}
 
 log.info """
 ROUND2 CONSENSUS mtDNA PIPELINE
@@ -63,6 +67,7 @@ Round1 NUMT VCF suffix: ${params.round1_nuc_vcf_suffix}
 Strict NUMT ref:        ${params.strict_numt_ref}
 mt shift:               ${params.mt_shift}
 interval padding:       ${params.mt_interval_padding}
+chrM assignment filter:  ${params.round2_chrm_assignment_filter}
 WDL ref files:          generated inside this NF
 WDL script:             ${params.wdl_script_round2}
 ===============================
@@ -1007,9 +1012,6 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
 
         # mtSwirl-like: after competitive mapping/preprocessing, keep primary reads mapping to chrM.
         # Do NOT require proper pair or mate-on-same-contig here.
-        # Remove read pairs where either mate has XS > AS, because that indicates the
-        # alternative alignment score exceeds the primary chrM alignment score. If one
-        # mate fails this check, drop the whole QNAME before variant calling.
         # Emit a chrM-only BAM. In addition to dropping NUMT @SQ lines, normalize
         # mate fields that still point to NUMT contigs; otherwise the BAM can carry
         # mate reference IDs that are invalid under the chrM-only header and fail
@@ -1036,24 +1038,130 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
                 print
               }' > "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam"
 
-        awk 'BEGIN{OFS="\\t"} /^@/{next} {as=""; xs=""; for(i=12;i<=NF;i++){if(\$i ~ /^AS:i:/) as=substr(\$i,6)+0; if(\$i ~ /^XS:i:/) xs=substr(\$i,6)+0} if(as != "" && xs != "" && xs > as) print \$1}' \
-            "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam" | sort -u > "\${SAMPLE_ID}.\${branch}.XS_gt_AS.drop_qnames.txt"
+        CHRM_ASSIGNMENT_FILTER_MODE=${params.round2_chrm_assignment_filter}
+        python3 - "\${CHRM_ASSIGNMENT_FILTER_MODE}" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assignment_filter.drop_qnames.txt" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assignment_filter.drop_reasons.tsv" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assignment_filter.metrics.tsv" <<'PY_CHRM_FILTER'
+import sys
+from collections import Counter, defaultdict
+
+mode = int(sys.argv[1])
+sam_path, drop_path, reasons_path, metrics_path = sys.argv[2:6]
+if mode not in (1, 2):
+    raise SystemExit(f"ERROR: round2 chrM assignment filter must be 1 or 2, got {mode}")
+
+records_by_qname = defaultdict(list)
+record_count = 0
+
+class Rec:
+    __slots__ = ("qname", "flag", "as_score", "xs_score", "has_as", "has_xs", "mate_key")
+    def __init__(self, fields):
+        self.qname = fields[0]
+        self.flag = int(fields[1])
+        self.as_score = None
+        self.xs_score = None
+        self.has_as = False
+        self.has_xs = False
+        for tag in fields[11:]:
+            if tag.startswith("AS:i:"):
+                self.as_score = int(tag[5:])
+                self.has_as = True
+            elif tag.startswith("XS:i:"):
+                self.xs_score = int(tag[5:])
+                self.has_xs = True
+        if self.flag & 0x40:
+            self.mate_key = "read2"
+        elif self.flag & 0x80:
+            self.mate_key = "read1"
+        elif self.flag & 0x1:
+            self.mate_key = "paired_unknown"
+        else:
+            self.mate_key = "unpaired"
+
+    @property
+    def has_both_scores(self):
+        return self.has_as and self.has_xs
+
+with open(sam_path) as handle:
+    for line in handle:
+        if line.startswith("@"):
+            continue
+        fields = line.rstrip("\n").split("\t")
+        rec = Rec(fields)
+        records_by_qname[rec.qname].append(rec)
+        record_count += 1
+
+def mates_for(rec, group):
+    if rec.mate_key == "read2":
+        return [m for m in group if m.flag & 0x80]
+    if rec.mate_key == "read1":
+        return [m for m in group if m.flag & 0x40]
+    if rec.mate_key == "paired_unknown":
+        return [m for m in group if m is not rec]
+    return []
+
+def mate_missing(rec, group):
+    return len(mates_for(rec, group)) == 0
+
+def mate_lacks_as_xs(rec, group):
+    mates = mates_for(rec, group)
+    return bool(mates) and any(not m.has_both_scores for m in mates)
+
+def mate_xs_ge_as(rec, group):
+    mates = mates_for(rec, group)
+    return bool(mates) and any(m.has_both_scores and m.xs_score >= m.as_score for m in mates)
+
+drop_reasons = defaultdict(set)
+if mode == 1:
+    for qname, group in records_by_qname.items():
+        for rec in group:
+            if not rec.has_both_scores:
+                continue
+            if rec.xs_score > rec.as_score:
+                drop_reasons[qname].add("read_XS_gt_AS")
+            if rec.as_score > rec.xs_score and (mate_missing(rec, group) or mate_lacks_as_xs(rec, group)):
+                drop_reasons[qname].add("read_AS_gt_XS_mate_missing_or_lacks_AS_XS")
+            if rec.xs_score == rec.as_score and (
+                mate_missing(rec, group) or mate_lacks_as_xs(rec, group) or mate_xs_ge_as(rec, group)
+            ):
+                drop_reasons[qname].add("partial_XS_eq_AS_mate_ambiguous")
+
+drop_qnames = sorted(drop_reasons)
+with open(drop_path, "w") as out:
+    for qname in drop_qnames:
+        out.write(qname + "\n")
+
+reason_counts = Counter()
+with open(reasons_path, "w") as out:
+    out.write("qname\treasons\n")
+    for qname in drop_qnames:
+        reasons = sorted(drop_reasons[qname])
+        for reason in reasons:
+            reason_counts[reason] += 1
+        out.write(f"{qname}\t{','.join(reasons)}\n")
+
+records_removed = sum(len(records_by_qname[q]) for q in drop_qnames)
+with open(metrics_path, "w") as out:
+    out.write("metric\tvalue\n")
+    out.write(f"round2_chrm_assignment_filter_mode\t{mode}\n")
+    out.write(f"round2_chrm_assignment_filter_enabled\t{str(mode == 1).lower()}\n")
+    out.write(f"primary_chrM_records_before_assignment_filter\t{record_count}\n")
+    out.write(f"qnames_removed_by_assignment_filter\t{len(drop_qnames)}\n")
+    out.write(f"primary_chrM_records_removed_by_assignment_filter\t{records_removed}\n")
+    out.write(f"primary_chrM_records_after_assignment_filter\t{record_count - records_removed}\n")
+    for reason in sorted(reason_counts):
+        out.write(f"qnames_removed_{reason}\t{reason_counts[reason]}\n")
+PY_CHRM_FILTER
 
         awk 'BEGIN{while((getline q < ARGV[1]) > 0) drop[q]=1; ARGV[1]=""; OFS="\\t"} /^@/{print; next} !drop[\$1]{print}' \
-            "\${SAMPLE_ID}.\${branch}.XS_gt_AS.drop_qnames.txt" \
+            "\${SAMPLE_ID}.\${branch}.chrM_assignment_filter.drop_qnames.txt" \
             "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam" \
           | samtools view -@ "\${THREADS}" -b -o "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam" -
 
-        {
-          echo -e "metric\\tvalue"
-          before_count=\$(awk 'BEGIN{n=0} !/^@/{n++} END{print n}' "\${SAMPLE_ID}.\${branch}.chrM_assigned.primary.sam")
-          dropped_qnames=\$(wc -l < "\${SAMPLE_ID}.\${branch}.XS_gt_AS.drop_qnames.txt")
-          after_count=\$(samtools view -c "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam")
-          echo -e "primary_chrM_records_before_XS_gt_AS_pair_filter\\t\${before_count}"
-          echo -e "qnames_removed_by_XS_gt_AS_pair_filter\\t\${dropped_qnames}"
-          echo -e "primary_chrM_records_after_XS_gt_AS_pair_filter\\t\${after_count}"
-        } > "\${SAMPLE_ID}.\${branch}.chrM_assigned.XS_gt_AS_filter_metrics.tsv"
-
+        after_count=\$(samtools view -c "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam")
+        echo -e "primary_chrM_records_after_bam_write\\t\${after_count}" >> "\${SAMPLE_ID}.\${branch}.chrM_assignment_filter.metrics.tsv"
         samtools index -@ "\${THREADS}" "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
         samtools quickcheck -v "\${SAMPLE_ID}.\${branch}.chrM_assigned.bam"
     }
