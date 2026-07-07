@@ -19,6 +19,43 @@ NUMT_BED_DIR="${NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/prim
 module load Nextflow/24.10.2
 # ==============================================================================
 
+# BATCH_FILE mode: run exactly one pre-split batch directly instead of creating
+# a Slurm array. This is used by launch_pipeline_all_per_batch.sh so all steps
+# in one fixed batch chain use the same sample list.
+if [ -n "${BATCH_FILE:-}" ]; then
+    echo "--- Running in BATCH_FILE mode ---"
+    [[ -s "${BATCH_FILE}" ]] || { echo "Error: BATCH_FILE does not exist or is empty: ${BATCH_FILE}" >&2; exit 1; }
+
+    if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/primate_pipeline_numt_decoy_round1.nf" ]]; then
+        SUBMIT_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+    else
+        SUBMIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    fi
+
+    RUN_DIR="${BATCH_ID:-$(basename "${BATCH_FILE}")}"
+    WORK_DIR="${NF_BASE_WORK_DIR}/${RUN_DIR}"
+    mkdir -p "${WORK_DIR}"
+    cd "${WORK_DIR}"
+
+    echo "INFO: Processing fixed batch file: ${BATCH_FILE}"
+    echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
+
+    nextflow run "${SUBMIT_DIR}/primate_pipeline_numt_decoy_round1.nf" \
+        -profile cluster \
+        -resume \
+        -w "${WORK_DIR}" \
+        --sample_tsv "${BATCH_FILE}" \
+        --outdir "${OUTPUT_DIR}" \
+        --cram_dirs "${CRAM_DIRS}" \
+        --numt_bed_dir "${NUMT_BED_DIR}"
+
+    echo "BATCH_FILE mode completed successfully for ${BATCH_FILE}"
+    cd "${SUBMIT_DIR}"
+    find "$(readlink -f "${OUTPUT_DIR}")" -type d -name "inputs" -exec rm -rf {} +
+    rm -rf "${WORK_DIR}"
+    exit 0
+fi
+
 if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
     echo "--- Running in Master Mode on Login/Coordinator Node ---"
 
