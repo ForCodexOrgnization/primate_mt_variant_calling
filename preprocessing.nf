@@ -142,8 +142,8 @@ process DOWNLOAD_FASTQ {
     tag "${meta.id}"
     label 'down_task'
     
-    // 建议增加重试策略，应对 EBI 服务器偶尔的拒绝访问
-    errorStrategy 'retry'
+    // Retry transient task-level failures, then skip only the bad sample so the batch can continue.
+    errorStrategy { task.attempt <= 2 ? 'retry' : 'ignore' }
     maxRetries 2
 
     input:
@@ -151,11 +151,15 @@ process DOWNLOAD_FASTQ {
 
     output:
     path "fastq_pairs.tsv", emit: pairs_tsv
+    path "failed_download.tsv", emit: failed_tsv, optional: true
     path "fastqs/*.fastq.gz", emit: fastq_files
 
     script:
     // 将你的 aria2c 路径定义为 Nextflow 变量
     def aria2_bin = "/home/lt692/.conda/envs/aria2_env/bin/aria2c"
+    def aria2_connections = params.aria2_connections as int
+    def aria2_splits = params.aria2_splits as int
+    def max_download_attempts = params.max_download_attempts as int
     
     """
     #!/usr/bin/env bash
@@ -205,30 +209,68 @@ process DOWNLOAD_FASTQ {
             echo "ERROR: Run \$run_id has \${#urls[@]} FASTQ URLs but \${#mds[@]} MD5 values." >&2; exit 1
         fi
 
-        # 下载 R1 和 R2；下载完成后立即按 ENA 提供的 fastq_md5 校验
+        record_failed_download() {
+            local failed_run_id="\$1"
+            local failed_fastq="\$2"
+            local reason="\$3"
+            if [[ ! -f failed_download.tsv ]]; then
+                echo -e "sample_id\trun_id\tfastq_file\treason" > failed_download.tsv
+            fi
+            echo -e "${meta.id}\t\${failed_run_id}\t\${failed_fastq}\t\${reason}" >> failed_download.tsv
+        }
+
+        download_and_verify_fastq() {
+            local url="\$1"
+            local target="\$2"
+            local expected_md5="\$3"
+            local run_id="\$4"
+            local fastq_file
+            fastq_file=\$(basename "\$target")
+
+            if [[ -z "\$expected_md5" ]]; then
+                echo "ERROR: Missing MD5 checksum for \$target in ENA report." >&2
+                rm -f "\$target" "\$target.aria2"
+                record_failed_download "\$run_id" "\$fastq_file" "MISSING_MD5"
+                return 1
+            fi
+
+            local attempt=1
+            while (( attempt <= ${max_download_attempts} )); do
+                echo "INFO: Downloading \$url with aria2c (attempt \$attempt/${max_download_attempts})..."
+                ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 \
+                    --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url"
+
+                if ! gzip -t "\$target"; then
+                    echo "WARN: gzip integrity check failed for \$target. Removing corrupted file before retry." >&2
+                    rm -f "\$target" "\$target.aria2"
+                    ((attempt++))
+                    continue
+                fi
+
+                if ! echo "\$expected_md5  \$target" | md5sum -c -; then
+                    echo "WARN: MD5 check failed for \$target. Removing corrupted file before retry." >&2
+                    rm -f "\$target" "\$target.aria2"
+                    ((attempt++))
+                    continue
+                fi
+
+                echo "INFO: gzip and MD5 checks passed for \$target."
+                return 0
+            done
+
+            echo "ERROR: \$target failed gzip and/or MD5 validation after ${max_download_attempts} download attempts." >&2
+            rm -f "\$target" "\$target.aria2"
+            record_failed_download "\$run_id" "\$fastq_file" "MD5_FAILED_AFTER_RETRIES"
+            return 1
+        }
+
+        # 下载 R1 和 R2；只有 gzip -t 和 ENA fastq_md5 都通过才写入下游清单
         for i in 0 1; do
             url="https://\${urls[\$i]}"
             target="fastqs/\${run_id}_\$((i+1)).fastq.gz"
-            
-            echo "Downloading \$url with aria2c..."
-            
-            # 使用 aria2c 增强下载
-            # -x 10 -s 10: 10个线程加速
-            # -c: 核心！支持断点续传
-            # --summary-interval=0: 减少日志刷屏
-            ${aria2_bin} -x 10 -s 10 -c -m 0 --retry-wait 5 \\
-                --summary-interval=0 -d fastqs -o "\${run_id}_\$((i+1)).fastq.gz" "\$url"
 
-            if [[ -z "\${mds[\$i]}" ]]; then
-                echo "ERROR: Missing MD5 checksum for \$target in ENA report." >&2
-                rm -f "\$target"
-                exit 1
-            fi
-
-            # 验证 MD5，如果失败则删除文件并报错退出
-            if ! echo "\${mds[\$i]}  \$target" | md5sum -c -; then
-                echo "ERROR: MD5 check failed for \$target. Removing corrupted file." >&2
-                rm -f "\$target"
+            if ! download_and_verify_fastq "\$url" "\$target" "\${mds[\$i]}" "\$run_id"; then
+                echo "ERROR: Download/validation failed for \$target; failing this sample so Nextflow can retry or ignore it." >&2
                 exit 1
             fi
         done
