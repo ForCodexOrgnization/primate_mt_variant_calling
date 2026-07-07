@@ -246,7 +246,17 @@ process DOWNLOAD_FASTQ {
       exit 2
     fi
 
+    cleanup_failed_download() {
+      local status=\$?
+      if [[ \$status -ne 0 ]]; then
+        echo "INFO: DOWNLOAD_FASTQ failed; removing partial FASTQ files from work directory before Nextflow retry." >&2
+        rm -rf "\${work_tmp:-}" fastqs
+      fi
+      exit \$status
+    }
+
     work_tmp=\$(mktemp -d)
+    trap cleanup_failed_download EXIT
     mkdir -p "\$work_tmp/fastqs" fastqs
 
     acc="${meta.id}"
@@ -332,7 +342,8 @@ process DOWNLOAD_FASTQ {
         echo "INFO: [\$i/\$tries] Downloading: \$url"
         # 先下到临时文件，校验通过再 mv
         if ! curl -fSL --retry 3 --retry-delay 2 "\$url" -o "\${out}.tmp"; then
-          echo "WARN: Download failed for \$url (attempt \$i/\$tries)" >&2
+          echo "WARN: Download failed for \$url (attempt \$i/\$tries); removing partial file before retry." >&2
+          rm -f "\${out}.tmp"
           ((i++))
           sleep \$((2*i))
           continue
@@ -353,6 +364,7 @@ process DOWNLOAD_FASTQ {
       done
 
       echo "ERROR: Failed to download with correct MD5 after \$tries attempts: \$url" >&2
+      rm -f "\${out}.tmp"
       return 1
     }
 

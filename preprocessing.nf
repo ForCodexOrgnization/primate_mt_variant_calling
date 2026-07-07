@@ -165,6 +165,16 @@ process DOWNLOAD_FASTQ {
     #!/usr/bin/env bash
     set -euo pipefail
 
+    cleanup_failed_download() {
+        local status=\$?
+        if [[ \$status -ne 0 ]]; then
+            echo "INFO: DOWNLOAD_FASTQ failed; removing partial FASTQ/report files from work directory before Nextflow retry." >&2
+            rm -rf fastqs report.tsv fastq_pairs.tsv failed_download.tsv
+        fi
+        exit \$status
+    }
+    trap cleanup_failed_download EXIT
+
     mkdir -p fastqs
     ena_base="https://www.ebi.ac.uk/ena/portal/api"
     acc="${meta.id}"
@@ -237,8 +247,13 @@ process DOWNLOAD_FASTQ {
             local attempt=1
             while (( attempt <= ${max_download_attempts} )); do
                 echo "INFO: Downloading \$url with aria2c (attempt \$attempt/${max_download_attempts})..."
-                ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 \
-                    --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url"
+                if ! ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -m 5 --retry-wait 10 \
+                    --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url"; then
+                    echo "WARN: aria2c failed for \$target. Removing partial file before retry." >&2
+                    rm -f "\$target" "\$target.aria2"
+                    ((attempt++))
+                    continue
+                fi
 
                 if ! gzip -t "\$target"; then
                     echo "WARN: gzip integrity check failed for \$target. Removing corrupted file before retry." >&2
