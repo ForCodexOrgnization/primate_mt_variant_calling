@@ -77,14 +77,23 @@ ch_parsed_samples = Channel.fromPath(params.sample_tsv)
     .ifEmpty { error "No valid samples found in ${params.sample_tsv}; expected tab-separated rows: sample_id<TAB>species_name[<TAB>ref_name]" }
 
 ch_samples = ch_parsed_samples
-    .filter { meta, species, ref_name ->
-        if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
-            log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
-            return false
+    .collect()
+    .flatMap { parsed_samples ->
+        def samples_to_process = parsed_samples.findAll { sample_tuple ->
+            def meta = sample_tuple[0]
+            if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
+                log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
+                return false
+            }
+            return true
         }
-        return true
+
+        if (samples_to_process.isEmpty()) {
+            log.info "All samples in this batch already have complete CRAM/CRAI; nothing to run in preprocessing."
+        }
+
+        return samples_to_process
     }
-    .ifEmpty { error "No samples left to process after existing-CRAM checks. If ${params.outdir} is empty or incomplete, rerun with --skip_existing_cram false and verify sample IDs match expected <outdir>/<sample>/alignment/<sample>.cram(.crai)." }
 
 workflow {
 
