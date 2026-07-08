@@ -180,7 +180,19 @@ process DOWNLOAD_FASTQ {
     
     """
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -Eeuo pipefail
+
+    cleanup_download_outputs() {
+        echo "WARN: DOWNLOAD_FASTQ interrupted or failed for ${meta.id}; removing downloaded FASTQ partial outputs." >&2
+        rm -rf fastqs
+        rm -f report.tsv fastq_pairs.tsv failed_download.tsv
+    }
+
+    trap cleanup_download_outputs INT TERM HUP QUIT ERR
+
+    # Clean stale outputs from a previous failed/cancelled attempt before retrying.
+    rm -rf fastqs
+    rm -f report.tsv fastq_pairs.tsv failed_download.tsv
 
     mkdir -p fastqs
     ena_base="https://www.ebi.ac.uk/ena/portal/api"
@@ -295,6 +307,8 @@ process DOWNLOAD_FASTQ {
         # 写入清单
         echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t\$run_id\\t\$PWD/fastqs/\${run_id}_1.fastq.gz\\t\$PWD/fastqs/\${run_id}_2.fastq.gz\\t\$valid_count" >> fastq_pairs.tsv
     done
+
+    trap - INT TERM HUP QUIT ERR
     """
 }
 
@@ -309,7 +323,7 @@ process ALIGN_AND_SORT {
     tuple val(meta), val(species_name), val(ref_name), path(r1), path(r2)
 
     output:
-    tuple val(meta), val(species_name), val(ref_name), path("*.bam"), path("*.bai"), emit: bam
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.${meta.pair_id}.sorted.bam"), path("${meta.id}.${meta.pair_id}.sorted.bam.bai"), emit: bam
 
     script:
     def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
@@ -318,7 +332,19 @@ process ALIGN_AND_SORT {
     def bam_output = "${meta.id}.${meta.pair_id}.sorted.bam"
     """
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -Eeuo pipefail
+
+    cleanup_alignment_outputs() {
+        echo "WARN: ALIGN_AND_SORT interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial BAM outputs." >&2
+        rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
+        rm -rf "tmp_sort_${meta.pair_id}"
+    }
+
+    trap cleanup_alignment_outputs INT TERM HUP QUIT ERR
+
+    # Clean stale partial outputs from a previous failed/cancelled attempt before retrying.
+    rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
+    rm -rf "tmp_sort_${meta.pair_id}"
     
     echo "INFO: Validating input FASTQ integrity..."
     # 快速检查 gzip 文件是否损坏，如果是损坏文件则在此处提前终止报错
@@ -348,6 +374,8 @@ process ALIGN_AND_SORT {
 
     # 成功完成后清理临时目录
     rm -rf "\${TMP_DIR}"
+
+    trap - INT TERM HUP QUIT ERR
     """
 }
 
