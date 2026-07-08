@@ -1088,7 +1088,7 @@ with open(sam_path) as handle:
     for line in handle:
         if line.startswith("@"):
             continue
-        fields = line.rstrip("\n").split("\t")
+        fields = line.rstrip("\\n").split("\\t")
         rec = Rec(fields)
         records_by_qname[rec.qname].append(rec)
         record_count += 1
@@ -1131,28 +1131,28 @@ if mode == 1:
 drop_qnames = sorted(drop_reasons)
 with open(drop_path, "w") as out:
     for qname in drop_qnames:
-        out.write(qname + "\n")
+        out.write(qname + "\\n")
 
 reason_counts = Counter()
 with open(reasons_path, "w") as out:
-    out.write("qname\treasons\n")
+    out.write("qname\\treasons\\n")
     for qname in drop_qnames:
         reasons = sorted(drop_reasons[qname])
         for reason in reasons:
             reason_counts[reason] += 1
-        out.write(f"{qname}\t{','.join(reasons)}\n")
+        out.write(f"{qname}\\t{','.join(reasons)}\\n")
 
 records_removed = sum(len(records_by_qname[q]) for q in drop_qnames)
 with open(metrics_path, "w") as out:
-    out.write("metric\tvalue\n")
-    out.write(f"round2_chrm_assignment_filter_mode\t{mode}\n")
-    out.write(f"round2_chrm_assignment_filter_enabled\t{str(mode == 1).lower()}\n")
-    out.write(f"primary_chrM_records_before_assignment_filter\t{record_count}\n")
-    out.write(f"qnames_removed_by_assignment_filter\t{len(drop_qnames)}\n")
-    out.write(f"primary_chrM_records_removed_by_assignment_filter\t{records_removed}\n")
-    out.write(f"primary_chrM_records_after_assignment_filter\t{record_count - records_removed}\n")
+    out.write("metric\\tvalue\\n")
+    out.write(f"round2_chrm_assignment_filter_mode\\t{mode}\\n")
+    out.write(f"round2_chrm_assignment_filter_enabled\\t{str(mode == 1).lower()}\\n")
+    out.write(f"primary_chrM_records_before_assignment_filter\\t{record_count}\\n")
+    out.write(f"qnames_removed_by_assignment_filter\\t{len(drop_qnames)}\\n")
+    out.write(f"primary_chrM_records_removed_by_assignment_filter\\t{records_removed}\\n")
+    out.write(f"primary_chrM_records_after_assignment_filter\\t{record_count - records_removed}\\n")
     for reason in sorted(reason_counts):
-        out.write(f"qnames_removed_{reason}\t{reason_counts[reason]}\n")
+        out.write(f"qnames_removed_{reason}\\t{reason_counts[reason]}\\n")
 PY_CHRM_FILTER
 
         awk 'BEGIN{while((getline q < ARGV[1]) > 0) drop[q]=1; ARGV[1]=""; OFS="\\t"} /^@/{print; next} !drop[\$1]{print}' \
