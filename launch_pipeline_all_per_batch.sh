@@ -50,6 +50,14 @@ fi
 cd "${repo_dir}"
 mkdir -p "${LOG_DIR}"
 
+echo "INFO: FULL_SAMPLE_LIST=${FULL_SAMPLE_LIST}"
+echo "INFO: PRE_OUTPUT_DIR=${PRE_OUTPUT_DIR}"
+echo "INFO: ROUND_OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
+echo "INFO: ROUND1_OUTDIR=${ROUND1_OUTDIR}"
+echo "INFO: NUMT_DISCOVERY_OUTROOT=${NUMT_DISCOVERY_OUTROOT}"
+echo "INFO: NUMT_BESTHIT_OUTDIR=${NUMT_BESTHIT_OUTDIR}"
+echo "INFO: NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
+
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -92,7 +100,7 @@ wait_for_job() {
 
 submit_and_wait_numt() {
     local batch_file="$1" batch_id="$2" submit_log="${LOG_DIR}/numt_${batch_id}.submit.log"
-    env FULL_SAMPLE_LIST="${batch_file}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" \
+    env FULL_SAMPLE_LIST="${batch_file}" BATCH_ID="batch_${batch_id}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" \
         NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" \
         BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${NUMT_CONCURRENT}" \
         CONCURRENT="${NUMT_CONCURRENT}" bash "${NUMT_LAUNCH_SCRIPT}" 2>&1 | tee "${submit_log}" >&2
@@ -162,8 +170,19 @@ run_chain() {
     validate_pre_to_round1 "${batch_file}"
     submit_and_wait_numt "${batch_file}" "${batch_id}"
     validate_numt_to_round1 "${batch_file}"
+    log "Launching round1 for ${batch_id}"
+    log "  BATCH_FILE=${batch_file}"
+    log "  OUTPUT_DIR=${ROUND1_OUTDIR}"
+    log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
+    log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
+    log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
     env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" bash "${ROUND1_LAUNCH_SCRIPT}"
     validate_round1_to_round2 "${batch_file}"
+    log "Launching round2 for ${batch_id}"
+    log "  BATCH_FILE=${batch_file}"
+    log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
+    log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
+    log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
     env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" bash "${ROUND2_LAUNCH_SCRIPT}"
     validate_round2_final "${batch_file}"
     log "Completed per-batch chain ${batch_id}"
