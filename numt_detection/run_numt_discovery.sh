@@ -153,7 +153,7 @@ fi
 [[ -s "$INPUT" ]] || { echo "ERROR: input file not found or empty: $INPUT" >&2; exit 1; }
 [[ -s "$INDEX" ]] || { echo "ERROR: index file not found or empty: $INDEX" >&2; exit 1; }
 
-mkdir -p "$OUTDIR"/{tmp,log_numt,intermediate}
+mkdir -p "$OUTDIR"/log_numt
 
 LOG="$OUTDIR/log_numt/${SAMPLE}.numt_discovery.log"
 exec > >(tee -a "$LOG") 2>&1
@@ -168,25 +168,57 @@ echo "Nuclear ref: $NUCLEAR_REF"
 echo "Outdir: $OUTDIR"
 
 ########################################
+# Local scratch workspace
+########################################
+LOCAL_TMP_ROOT="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
+LOCAL_WORKDIR="${LOCAL_TMP_ROOT}/${SAMPLE}.numt_discovery.${SLURM_JOB_ID:-manual}.${SLURM_ARRAY_TASK_ID:-0}.$$"
+LOCAL_INTERMEDIATE="${LOCAL_WORKDIR}/intermediate"
+LOCAL_FINAL_OUTPUTS="${LOCAL_WORKDIR}/final_outputs"
+
+cleanup_local_workdir() {
+  if [[ -n "${LOCAL_WORKDIR:-}" && -d "$LOCAL_WORKDIR" ]]; then
+    rm -rf "$LOCAL_WORKDIR"
+  fi
+}
+trap cleanup_local_workdir EXIT
+
+mkdir -p "$LOCAL_INTERMEDIATE" "$LOCAL_FINAL_OUTPUTS" "$OUTDIR"
+
+# Ignore stale or partial intermediates from older versions/runs on shared storage.
+rm -rf "$OUTDIR/intermediate" "$OUTDIR/tmp"
+
+echo "Local workdir: $LOCAL_WORKDIR"
+echo "Local intermediate: $LOCAL_INTERMEDIATE"
+echo "Local final outputs: $LOCAL_FINAL_OUTPUTS"
+
+########################################
 # Files
 ########################################
-MT_BED="$OUTDIR/intermediate/${SAMPLE}.mt_region.bed"
-MT_FETCH_BAM="$OUTDIR/intermediate/${SAMPLE}.mt_fetch_pairs.bam"
-MT_FETCH_BAI="$OUTDIR/intermediate/${SAMPLE}.mt_fetch_pairs.bam.bai"
+MT_BED="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_region.bed"
+MT_FETCH_BAM="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_fetch_pairs.bam"
+MT_FETCH_BAI="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_fetch_pairs.bam.bai"
 
-R1_FQ="$OUTDIR/intermediate/${SAMPLE}.R1.fastq.gz"
-R2_FQ="$OUTDIR/intermediate/${SAMPLE}.R2.fastq.gz"
-SINGLE_FQ="$OUTDIR/intermediate/${SAMPLE}.single.fastq.gz"
+R1_FQ="$LOCAL_INTERMEDIATE/${SAMPLE}.R1.fastq.gz"
+R2_FQ="$LOCAL_INTERMEDIATE/${SAMPLE}.R2.fastq.gz"
+SINGLE_FQ="$LOCAL_INTERMEDIATE/${SAMPLE}.single.fastq.gz"
 
-NUC_BAM="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.sorted.bam"
-NUC_BAI="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.sorted.bam.bai"
-NUC_BAM_TMP="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.sorted.bam.tmp"
-NUC_BAI_TMP="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.sorted.bam.tmp.bai"
+NUC_BAM="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.sorted.bam"
+NUC_BAI="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.sorted.bam.bai"
+NUC_BAM_TMP="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.sorted.bam.tmp"
+NUC_BAI_TMP="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.sorted.bam.tmp.bai"
 
+BED_LOCAL="$LOCAL_FINAL_OUTPUTS/${SAMPLE}.numt_candidates.bed"
+TSV_LOCAL="$LOCAL_FINAL_OUTPUTS/${SAMPLE}.numt_candidates.tsv"
 BED_OUT="$OUTDIR/${SAMPLE}.numt_candidates.bed"
 TSV_OUT="$OUTDIR/${SAMPLE}.numt_candidates.tsv"
 DONE_OUT="$OUTDIR/${SAMPLE}.numt_discovery.done"
-HIGHCONF_OUT="$OUTDIR/${SAMPLE}.highconf_numt.bed"
+
+publish_final_outputs() {
+  mkdir -p "$OUTDIR"
+  cp "$BED_LOCAL" "$BED_OUT"
+  cp "$TSV_LOCAL" "$TSV_OUT"
+  touch "$DONE_OUT"
+}
 
 ########################################
 # Resume/skip guard
@@ -243,9 +275,9 @@ samtools fastq \
 echo "[$(date)] Step 4: remapping to nuclear-only reference"
 
 # avoid stale/truncated outputs from interrupted previous runs
-PAIR_BAM_TMP="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.paired.sorted.bam"
-SINGLE_BAM_TMP="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.single.sorted.bam"
-rm -f "$NUC_BAM" "$NUC_BAI" "$NUC_BAM_TMP" "$NUC_BAI_TMP" "$PAIR_BAM_TMP" "$SINGLE_BAM_TMP"
+PAIR_BAM_TMP="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.paired.sorted.bam"
+SINGLE_BAM_TMP="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.single.sorted.bam"
+rm -f "$NUC_BAM" "$NUC_BAI" "$NUC_BAM_TMP" "$NUC_BAI_TMP" "$PAIR_BAM_TMP" "$SINGLE_BAM_TMP" "$PAIR_BAM_TMP.tmp" "$SINGLE_BAM_TMP.tmp"
 
 HAS_PAIRED=0
 HAS_SINGLE=0
@@ -254,16 +286,15 @@ HAS_SINGLE=0
 
 if [[ "$HAS_PAIRED" -eq 0 && "$HAS_SINGLE" -eq 0 ]]; then
   echo "[$(date)] WARNING: no reads available for remapping (paired and singleton FASTQ are empty)."
-  : > "$BED_OUT"
-  : > "$HIGHCONF_OUT"
-  echo -e "sample\tchrom\tstart0\tend0\tlength\tnreads\tmean_mapq\tpadded_start0\tpadded_end0\tpadded_length" > "$TSV_OUT"
-  touch "$DONE_OUT"
+  : > "$BED_LOCAL"
+  echo -e "sample\tchrom\tstart0\tend0\tlength\tnreads\tmean_mapq\tpadded_start0\tpadded_end0\tpadded_length" > "$TSV_LOCAL"
+  publish_final_outputs
   echo "[$(date)] Done (no candidates)."
   exit 0
 fi
 
-PAIR_SAM_TMP="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.paired.sam"
-SINGLE_SAM_TMP="$OUTDIR/intermediate/${SAMPLE}.mt_related_to_nuclear.single.sam"
+PAIR_SAM_TMP="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.paired.sam"
+SINGLE_SAM_TMP="$LOCAL_INTERMEDIATE/${SAMPLE}.mt_related_to_nuclear.single.sam"
 rm -f "$PAIR_SAM_TMP" "$SINGLE_SAM_TMP"
 
 if [[ "$HAS_PAIRED" -eq 1 ]]; then
@@ -273,7 +304,9 @@ if [[ "$HAS_PAIRED" -eq 1 ]]; then
     "$NUCLEAR_REF" \
     "$R1_FQ" "$R2_FQ" > "$PAIR_SAM_TMP"
   if [[ -s "$PAIR_SAM_TMP" ]] && samtools view -H "$PAIR_SAM_TMP" >/dev/null 2>&1; then
-    samtools sort -@ "$THREADS" -o "$PAIR_BAM_TMP" "$PAIR_SAM_TMP"
+    samtools sort -@ "$THREADS" -o "$PAIR_BAM_TMP.tmp" "$PAIR_SAM_TMP"
+    samtools quickcheck -v "$PAIR_BAM_TMP.tmp"
+    mv "$PAIR_BAM_TMP.tmp" "$PAIR_BAM_TMP"
   else
     echo "[$(date)] WARNING: paired remap produced no valid SAM output; skipping paired BAM."
     HAS_PAIRED=0
@@ -287,7 +320,9 @@ if [[ "$HAS_SINGLE" -eq 1 ]]; then
     "$NUCLEAR_REF" \
     "$SINGLE_FQ" > "$SINGLE_SAM_TMP"
   if [[ -s "$SINGLE_SAM_TMP" ]] && samtools view -H "$SINGLE_SAM_TMP" >/dev/null 2>&1; then
-    samtools sort -@ "$THREADS" -o "$SINGLE_BAM_TMP" "$SINGLE_SAM_TMP"
+    samtools sort -@ "$THREADS" -o "$SINGLE_BAM_TMP.tmp" "$SINGLE_SAM_TMP"
+    samtools quickcheck -v "$SINGLE_BAM_TMP.tmp"
+    mv "$SINGLE_BAM_TMP.tmp" "$SINGLE_BAM_TMP"
   else
     echo "[$(date)] WARNING: singleton remap produced no valid SAM output; skipping singleton BAM."
     HAS_SINGLE=0
@@ -298,10 +333,9 @@ rm -f "$PAIR_SAM_TMP" "$SINGLE_SAM_TMP"
 
 if [[ "$HAS_PAIRED" -eq 0 && "$HAS_SINGLE" -eq 0 ]]; then
   echo "[$(date)] WARNING: no valid remap outputs were produced."
-  : > "$BED_OUT"
-  : > "$HIGHCONF_OUT"
-  echo -e "sample\tchrom\tstart0\tend0\tlength\tnreads\tmean_mapq\tpadded_start0\tpadded_end0\tpadded_length" > "$TSV_OUT"
-  touch "$DONE_OUT"
+  : > "$BED_LOCAL"
+  echo -e "sample\tchrom\tstart0\tend0\tlength\tnreads\tmean_mapq\tpadded_start0\tpadded_end0\tpadded_length" > "$TSV_LOCAL"
+  publish_final_outputs
   echo "[$(date)] Done (no candidates)."
   exit 0
 fi
@@ -323,14 +357,12 @@ if [[ "$NUC_REC_COUNT" -eq 0 ]]; then
   echo "[$(date)] No mt-related nuclear alignments found for ${SAMPLE}."
 
   mv "$NUC_BAM_TMP" "$NUC_BAM"
-   : > "$BED_OUT"
-  : > "$HIGHCONF_OUT"
-  echo -e "sample	chrom	start0	end0	length	nreads	mean_mapq	padded_start0	padded_end0	padded_length" > "$TSV_OUT"
-  touch "$DONE_OUT"
+  : > "$BED_LOCAL"
+  echo -e "sample	chrom	start0	end0	length	nreads	mean_mapq	padded_start0	padded_end0	padded_length" > "$TSV_LOCAL"
+  publish_final_outputs
 
   echo "[$(date)] Done (no candidates)."
   echo "BED: $BED_OUT (empty)"
-  echo "HIGHCONF BED: $HIGHCONF_OUT (empty)"
   echo "TSV: $TSV_OUT (header only)"
   exit 0
 fi
@@ -357,10 +389,10 @@ python3 "${SCRIPT_DIR}/discover_numt_sinks.py" \
   --min-len "$MIN_LEN" \
   --merge-gap "$MERGE_GAP" \
   --pad "$PAD" \
-  --bed-out "$BED_OUT" \
-  --tsv-out "$TSV_OUT"
+  --bed-out "$BED_LOCAL" \
+  --tsv-out "$TSV_LOCAL"
 
-touch "$DONE_OUT"
+publish_final_outputs
 echo "[$(date)] Done."
 echo "DONE: $DONE_OUT"
 echo "BED: $BED_OUT"
