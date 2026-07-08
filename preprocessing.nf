@@ -77,7 +77,11 @@ ch_parsed_samples = Channel.fromPath(params.sample_tsv)
     .ifEmpty { error "No valid samples found in ${params.sample_tsv}; expected tab-separated rows: sample_id<TAB>species_name[<TAB>ref_name]" }
 
 ch_samples = ch_parsed_samples
-    .collect()
+    // Preserve each emitted tuple as one list element. Nextflow's collect()
+    // flattens tuple items by default, which would turn tuples into a stream
+    // like [meta, species, ref_name, ...] and make sample_tuple[0] null for
+    // the meta map entries below.
+    .collect(flat: false)
     .flatMap { parsed_samples ->
         def samples_to_process = parsed_samples.findAll { sample_tuple ->
             if (!sample_tuple || sample_tuple.size() < 3 || !sample_tuple[0]?.id) {
