@@ -2,7 +2,7 @@
 #SBATCH --job-name=NF_Primate_Chain
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
-#SBATCH --time=72:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=log_all_per_batch/nf_chain_%A_%a.log
 
 set -euo pipefail
