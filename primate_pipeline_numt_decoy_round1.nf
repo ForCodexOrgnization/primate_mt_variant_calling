@@ -561,11 +561,11 @@ outputs = [Path(f"{sample}.numt_decoy.raw.vcf.gz"), Path(f"{sample}.numt_decoy.p
 lines = ["##fileformat=VCFv4.2", "##source=CALL_NUMT_VARIANTS_DECOY"]
 with fai.open() as handle:
     for line in handle:
-        fields = line.rstrip("\n").split("\t")
+        fields = line.rstrip("\\n").split("\\t")
         if len(fields) >= 2:
             lines.append(f"##contig=<ID={fields[0]},length={fields[1]}>")
-lines.append(f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}")
-payload = ("\n".join(lines) + "\n").encode()
+lines.append(f"#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\t{sample}")
+payload = ("\\n".join(lines) + "\\n").encode()
 
 def bgzf_block(data: bytes) -> bytes:
     compressor = zlib.compressobj(level=6, method=zlib.DEFLATED, wbits=-15)
