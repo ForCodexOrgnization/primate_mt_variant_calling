@@ -8,7 +8,7 @@ The consensus NUMT round 2 pipeline calculates mitochondrial copy number (mtCN) 
 <outdir>/<sample_id>/round_2/mtcn/<sample_id>.round2.mtcn.tsv
 ```
 
-The mtCN file contains both mean-based and median-based round 2 mtCN values:
+The mtCN file contains both mean-based and median-based round 2 mtCN values. For compatibility with downstream summary tables, it includes alias columns named `mean_mt_coverage`, `mean_nuclear_coverage`, and `mean_mtCN` in addition to the existing `mt_mean_coverage`, `nuclear_mean_coverage`, and `mtcn_mean` columns:
 
 ```text
 mtcn_mean = 2 * mt_mean_coverage / nuclear_mean_coverage

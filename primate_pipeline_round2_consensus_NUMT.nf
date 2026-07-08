@@ -1294,8 +1294,8 @@ nuc_median_cov = weighted_median(nuc_cov_weights)
 mtcn_mean = (2.0 * mt_mean_cov / nuc_mean_cov) if nuc_mean_cov > 0 else math.nan
 mtcn_median = (2.0 * mt_median_cov / nuc_median_cov) if nuc_median_cov > 0 else math.nan
 with out.open("w") as fh:
-    fh.write("sample\\tspecies\\tref_name\\tmt_contig\\tmt_coverage_source\\tnuclear_coverage_source\\tmt_mean_coverage\\tnuclear_mean_coverage\\tmtcn_mean\\tmean_formula\\tmt_median_coverage\\tnuclear_median_coverage\\tmtcn_median\\tmedian_formula\\n")
-    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_non_mt_contigs\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\t{mt_median_cov:.6f}\\t{nuc_median_cov:.6f}\\t{mtcn_median:.6f}\\t2*mt_median_coverage/nuclear_median_coverage\\n")
+    fh.write("sample\\tspecies\\tref_name\\tmt_contig\\tmt_coverage_source\\tnuclear_coverage_source\\tmean_mt_coverage\\tmean_nuclear_coverage\\tmean_mtCN\\tmt_mean_coverage\\tnuclear_mean_coverage\\tmtcn_mean\\tmean_formula\\tmt_median_coverage\\tnuclear_median_coverage\\tmtcn_median\\tmedian_formula\\n")
+    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_non_mt_contigs\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\t{mt_median_cov:.6f}\\t{nuc_median_cov:.6f}\\t{mtcn_median:.6f}\\t2*mt_median_coverage/nuclear_median_coverage\\n")
 PY_MTCN
     """
 }
