@@ -193,5 +193,28 @@ CHRM_REF_DIR=${CHRM_REF_DIR}
 BESTHIT_OUTDIR=${BESTHIT_OUTDIR}
 CFG
 
-bash "${SCRIPT_DIR}/run_numt_end2end.sh" --config "$TMP_CFG"
+NUMT_MAX_ATTEMPTS="${NUMT_MAX_ATTEMPTS:-2}"
+attempt=1
+status=0
+while (( attempt <= NUMT_MAX_ATTEMPTS )); do
+  echo "[$(date)] NUMT end-to-end attempt ${attempt}/${NUMT_MAX_ATTEMPTS} for ${SAMPLE_ID}"
+  if bash "${SCRIPT_DIR}/run_numt_end2end.sh" --config "$TMP_CFG"; then
+    status=0
+    break
+  fi
+
+  status=$?
+  if [[ "$status" -eq 1 && "$attempt" -lt "$NUMT_MAX_ATTEMPTS" ]]; then
+    echo "[$(date)] NUMT attempt ${attempt} failed with exit code 1; retrying ${SAMPLE_ID} once for possible transient filesystem failure." >&2
+    rm -f "${SAMPLE_DISCOVERY_OUTDIR}/${SAMPLE_ID}.numt_discovery.done"
+    rm -rf "${SAMPLE_DISCOVERY_OUTDIR}/intermediate" "${SAMPLE_DISCOVERY_OUTDIR}/tmp"
+    attempt=$((attempt + 1))
+    sleep "${NUMT_RETRY_SLEEP_SECONDS:-30}"
+    continue
+  fi
+
+  break
+done
+
 rm -f "$TMP_CFG"
+exit "$status"
