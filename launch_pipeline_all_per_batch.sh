@@ -100,7 +100,7 @@ wait_for_job() {
 
 submit_and_wait_numt() {
     local batch_file="$1" batch_id="$2" submit_log="${LOG_DIR}/numt_${batch_id}.submit.log"
-    env FULL_SAMPLE_LIST="${batch_file}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" \
+    env FULL_SAMPLE_LIST="${batch_file}" BATCH_ID="batch_${batch_id}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" \
         NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" \
         BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${NUMT_CONCURRENT}" \
         CONCURRENT="${NUMT_CONCURRENT}" bash "${NUMT_LAUNCH_SCRIPT}" 2>&1 | tee "${submit_log}" >&2
