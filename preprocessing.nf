@@ -359,19 +359,45 @@ process MERGE_BAMS {
     tuple val(meta), val(species_name), val(ref_name), path(bams)
 
     output:
-    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.merged.bam"), path("*.bai"), emit: merged_bam
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.merged.bam"), path("${meta.id}.merged.bam.bai"), emit: merged_bam
 
     script:
     def bam_list = bams.join(' ')
     def merged_name = "${meta.id}.merged.bam"
+    def tmp_name = "${meta.id}.merged.tmp.bam"
     """
     #!/usr/bin/env bash
     set -euo pipefail
 
-    samtools merge -f -@ ${task.cpus} "${merged_name}" ${bam_list}
-    samtools index -@ ${task.cpus} "${merged_name}"
-    
+    cleanup_partial_outputs() {
+        echo "WARN: MERGE_BAMS interrupted or failed for ${meta.id}; removing partial outputs." >&2
+        rm -f "${tmp_name}" "${tmp_name}.bai" "${tmp_name}.csi"
+        rm -f "${merged_name}" "${merged_name}.bai" "${merged_name}.csi"
+    }
+
+    trap cleanup_partial_outputs INT TERM HUP QUIT ERR
+
+    # Clean stale partial outputs from previous cancelled attempts.
+    rm -f "${tmp_name}" "${tmp_name}.bai" "${tmp_name}.csi"
+    rm -f "${merged_name}" "${merged_name}.bai" "${merged_name}.csi"
+
+    echo "INFO: Merging BAMs for ${meta.id} into temporary file ${tmp_name}"
+    samtools merge -f -@ ${task.cpus} "${tmp_name}" ${bam_list}
+
+    echo "INFO: Indexing temporary merged BAM"
+    samtools index -@ ${task.cpus} "${tmp_name}"
+
+    echo "INFO: Quick-checking temporary merged BAM"
+    samtools quickcheck "${tmp_name}"
+
+    echo "INFO: Promoting temporary merged BAM to final output"
+    mv "${tmp_name}" "${merged_name}"
+    mv "${tmp_name}.bai" "${merged_name}.bai"
+
+    echo "INFO: Final quickcheck"
     samtools quickcheck "${merged_name}"
+
+    trap - INT TERM HUP QUIT ERR
     """
 }
 
