@@ -12,8 +12,13 @@ FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/project_pi_njl27/lt692/primate
 BATCH_SIZE="${BATCH_SIZE:-5}"
 CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_round2}"
-OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
-ROUND1_OUTDIR="${ROUND1_OUTDIR:-${OUTPUT_DIR}}"
+if [[ -n "${BATCH_FILE:-}" ]]; then
+    OUTPUT_DIR="${OUTPUT_DIR:?ERROR: OUTPUT_DIR must be explicitly set in BATCH_FILE mode}"
+    ROUND1_OUTDIR="${ROUND1_OUTDIR:?ERROR: ROUND1_OUTDIR must be explicitly set in BATCH_FILE mode}"
+else
+    OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
+    ROUND1_OUTDIR="${ROUND1_OUTDIR:-${OUTPUT_DIR}}"
+fi
 
 module load Nextflow/24.10.2
 # ==============================================================================
@@ -38,6 +43,12 @@ if [ -n "${BATCH_FILE:-}" ]; then
 
     echo "INFO: Processing fixed batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
+    echo "INFO: round2 BATCH_FILE mode parameters:"
+    echo "  BATCH_FILE=${BATCH_FILE}"
+    echo "  OUTPUT_DIR=${OUTPUT_DIR}"
+    echo "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
+    echo "  NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
+    echo "  WORK_DIR=${WORK_DIR}"
 
     nextflow run "${SUBMIT_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
         -profile cluster \

@@ -12,12 +12,41 @@ FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primat
 BATCH_SIZE="${BATCH_SIZE:-5}"
 CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_round1}"
-OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
-CRAM_DIRS="${CRAM_DIRS:-${OUTPUT_DIR}}"
-NUMT_BED_DIR="${NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict}"
+if [[ -n "${BATCH_FILE:-}" ]]; then
+    OUTPUT_DIR="${OUTPUT_DIR:?ERROR: OUTPUT_DIR must be explicitly set in BATCH_FILE mode}"
+    CRAM_DIRS="${CRAM_DIRS:?ERROR: CRAM_DIRS must be explicitly set in BATCH_FILE mode}"
+    NUMT_BED_DIR="${NUMT_BED_DIR:?ERROR: NUMT_BED_DIR must be explicitly set in BATCH_FILE mode}"
+else
+    OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
+    CRAM_DIRS="${CRAM_DIRS:-${OUTPUT_DIR}}"
+    NUMT_BED_DIR="${NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict}"
+fi
 
 module load Nextflow/24.10.2
 # ==============================================================================
+
+read_sample_ids() {
+    local sample_file="$1"
+    awk -F '	' 'NF >= 2 && $1 !~ /^#/ && $1 != "" && tolower($1) != "sample" && tolower($1) != "sample_id" {print $1}' "${sample_file}"
+}
+
+validate_round1_outputs() {
+    local batch_file="$1" output_dir="$2" missing=0 sample
+    echo "INFO: Validating round1 outputs under: ${output_dir}"
+    while IFS= read -r sample; do
+        local bam="${output_dir}/${sample}/round_1/candidate_reads/${sample}.with_mates.bam"
+        local vcf_dir="${output_dir}/${sample}/round_1_variant_calling_decoy"
+        local numt_fa="${output_dir}/${sample}/round_1/numt_decoy_ref/${sample}.original_numt.fa"
+        local numt_vcf="${output_dir}/${sample}/round_1/numt_decoy_variant_calling/${sample}.numt_decoy.raw.vcf.gz"
+        [[ -s "${bam}" ]] || { echo "MISSING/EMPTY: ${bam}" >&2; missing=1; }
+        [[ -d "${vcf_dir}" ]] || { echo "MISSING DIR: ${vcf_dir}" >&2; missing=1; }
+        find "${vcf_dir}" -type f -name "${sample}.numt_decoy.clean.final.split.vcf" -size +0c -print -quit 2>/dev/null | grep -q . || { echo "MISSING/EMPTY round1 final VCF under: ${vcf_dir}" >&2; missing=1; }
+        [[ -e "${numt_fa}" ]] || { echo "MISSING: ${numt_fa}" >&2; missing=1; }
+        [[ -s "${numt_vcf}" ]] || { echo "MISSING/EMPTY: ${numt_vcf}" >&2; missing=1; }
+        [[ -s "${numt_vcf}.tbi" ]] || { echo "MISSING/EMPTY: ${numt_vcf}.tbi" >&2; missing=1; }
+    done < <(read_sample_ids "${batch_file}")
+    [[ "${missing}" -eq 0 ]] || { echo "ERROR: Round1 outputs are incomplete under ${output_dir}" >&2; return 1; }
+}
 
 # BATCH_FILE mode: run exactly one pre-split batch directly instead of creating
 # a Slurm array. This is used by launch_pipeline_all_per_batch.sh so all steps
@@ -39,6 +68,13 @@ if [ -n "${BATCH_FILE:-}" ]; then
 
     echo "INFO: Processing fixed batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
+    echo "INFO: round1 BATCH_FILE mode parameters:"
+    echo "  BATCH_FILE=${BATCH_FILE}"
+    echo "  OUTPUT_DIR=${OUTPUT_DIR}"
+    echo "  CRAM_DIRS=${CRAM_DIRS}"
+    echo "  NUMT_BED_DIR=${NUMT_BED_DIR}"
+    echo "  NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
+    echo "  WORK_DIR=${WORK_DIR}"
 
     nextflow run "${SUBMIT_DIR}/primate_pipeline_numt_decoy_round1.nf" \
         -profile cluster \
@@ -48,6 +84,8 @@ if [ -n "${BATCH_FILE:-}" ]; then
         --outdir "${OUTPUT_DIR}" \
         --cram_dirs "${CRAM_DIRS}" \
         --numt_bed_dir "${NUMT_BED_DIR}"
+
+    validate_round1_outputs "${BATCH_FILE}" "${OUTPUT_DIR}"
 
     echo "BATCH_FILE mode completed successfully for ${BATCH_FILE}"
     cd "${SUBMIT_DIR}"
