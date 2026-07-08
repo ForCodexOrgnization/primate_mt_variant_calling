@@ -125,6 +125,11 @@ echo "INFO: Submitting NUMT discovery with CONCURRENT=${CONCURRENT} sample tasks
 CONFIG="${auto_config}"
 # Round 1 NUMT consensus filtering defaults to --hc_dp_lower_bound 10 in nextflow.config.
 env -u SLURM_SUBMIT_DIR \
+    -u SLURM_ARRAY_TASK_ID \
+    -u SLURM_ARRAY_JOB_ID \
+    -u SLURM_ARRAY_TASK_COUNT \
+    -u SLURM_ARRAY_TASK_MIN \
+    -u SLURM_ARRAY_TASK_MAX \
   bash submit_numt_end2end_array.sh \
     --config "${CONFIG}" \
     --concurrent "${CONCURRENT}"
