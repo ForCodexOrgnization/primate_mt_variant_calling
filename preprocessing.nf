@@ -80,6 +80,10 @@ ch_samples = ch_parsed_samples
     .collect()
     .flatMap { parsed_samples ->
         def samples_to_process = parsed_samples.findAll { sample_tuple ->
+            if (!sample_tuple || sample_tuple.size() < 3 || !sample_tuple[0]?.id) {
+                error "Malformed parsed sample entry in ${params.sample_tsv}: ${sample_tuple}"
+            }
+
             def meta = sample_tuple[0]
             if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
                 log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
