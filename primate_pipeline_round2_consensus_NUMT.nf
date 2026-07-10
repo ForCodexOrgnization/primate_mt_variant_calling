@@ -1468,6 +1468,7 @@ process LIFTBACK_ROUND2_VCF_TO_ORIGINAL {
           path("${meta.id}.round2.original_coords.skipped_overlap_consensus_sites.tsv"),
           path("${meta.id}.round2.original_coords.round2_dropped_by_round1.tsv"),
           path("${meta.id}.round2.original_coords.merge_policy.summary.tsv"),
+          path("${meta.id}.round2.original_coords.stacked_indel_filter.summary.tsv"),
           emit: original_coord_vcf
 
     tuple val(meta), val(species_name), val(ref_name),
@@ -1558,6 +1559,107 @@ PY_FIND_VCF
     fi
     tabix -p vcf -f "\${SAMPLE_ID}.round2.consensus_coord.input.vcf.gz"
 
+    # Add read-level ambiguity metrics before lift-back while the VCF and BAM
+    # are both in the Round 2 consensus coordinate system. These INFO fields
+    # are then carried through lift-back for Round 2 residual calls.
+    cat > add_ambiguity_metrics.py <<'PY_AMBIGUITY'
+import subprocess, sys
+bam = sys.argv[1]
+metrics_source = sys.argv[2] if len(sys.argv) > 2 else "unknown"
+metric_headers = [
+('alt_support_reads','1','Integer','ALT-supporting reads inspected in the chrM BAM; missing means not computed'),
+('alt_reads_with_AS','1','Integer','ALT-supporting reads carrying an AS tag; missing means not computed'),
+('alt_reads_with_XS','1','Integer','ALT-supporting reads carrying an XS tag; missing means not computed'),
+('alt_reads_with_both_AS_XS','1','Integer','ALT-supporting reads carrying both AS and XS tags; missing means not computed'),
+('alt_XS_ge_AS_n','1','Integer','ALT-supporting reads with XS >= AS; missing means not computed'),
+('alt_XS_ge_AS_pct','1','Float','Percentage of ALT-supporting reads with XS >= AS; missing means not computed'),
+('alt_XS_eq_AS_n','1','Integer','ALT-supporting reads with XS == AS; missing means not computed'),
+('alt_XS_gt_AS_n','1','Integer','ALT-supporting reads with XS > AS; missing means not computed'),
+('alt_reads_without_XS_ge_AS','1','Integer','ALT-supporting reads without XS >= AS; missing means not computed'),
+('AMBIGUITY_METRICS_SOURCE','1','String','Source/context used to compute AS/XS ambiguity metrics'),
+]
+metric_keys = [x[0] for x in metric_headers]
+missing_vals = [
+'alt_support_reads=.', 'alt_reads_with_AS=.', 'alt_reads_with_XS=.',
+'alt_reads_with_both_AS_XS=.', 'alt_XS_ge_AS_n=.', 'alt_XS_ge_AS_pct=.',
+'alt_XS_eq_AS_n=.', 'alt_XS_gt_AS_n=.', 'alt_reads_without_XS_ge_AS=.',
+'AMBIGUITY_METRICS_SOURCE=not_computed_non_snv',
+]
+
+def tags(fields):
+    d={}
+    for x in fields[11:]:
+        p=x.split(':',2)
+        if len(p)==3 and p[1]=='i':
+            try: d[p[0]]=int(p[2])
+            except ValueError: pass
+    return d
+
+def cigar_base(pos, rec):
+    fields=rec.rstrip('\n').split('\t')
+    if len(fields)<11: return None, {}
+    import re
+    ref=int(fields[3]); read=0; seq=fields[9]
+    for n,op in re.findall(r'(\d+)([MIDNSHP=X])', fields[5]):
+        n=int(n)
+        if op in 'M=X':
+            if ref <= pos < ref+n:
+                idx=read+(pos-ref)
+                return (seq[idx].upper() if idx < len(seq) else None), tags(fields)
+            ref += n; read += n
+        elif op in 'DN':
+            ref += n
+        elif op in 'IS':
+            read += n
+    return None, tags(fields)
+
+def metrics(chrom,pos,ref,alt):
+    c={k:0 for k in ['support','as','xs','both','ge','eq','gt']}
+    region=f'{chrom}:{pos}-{pos}'
+    try:
+        out=subprocess.check_output(['samtools','view',bam,region], text=True)
+    except subprocess.CalledProcessError:
+        out=''
+    for rec in out.splitlines():
+        base,t=cigar_base(pos, rec)
+        if base != alt.upper(): continue
+        c['support']+=1
+        has_as='AS' in t; has_xs='XS' in t
+        c['as']+=has_as; c['xs']+=has_xs; c['both']+=(has_as and has_xs)
+        if has_as and has_xs:
+            c['ge'] += t['XS'] >= t['AS']; c['eq'] += t['XS'] == t['AS']; c['gt'] += t['XS'] > t['AS']
+    return c
+
+def append_info(info, vals):
+    parts = [] if info in ('', '.') else [x for x in info.split(';') if x]
+    parts = [x for x in parts if x.split('=', 1)[0] not in metric_keys]
+    return ';'.join(parts + vals) if parts or vals else '.'
+
+for line in sys.stdin:
+    if line.startswith('##'):
+        sys.stdout.write(line); continue
+    if line.startswith('#CHROM'):
+        for mid,num,typ,desc in metric_headers:
+            print(f'##INFO=<ID={mid},Number={num},Type={typ},Description="{desc}">')
+        sys.stdout.write(line); continue
+    f=line.rstrip('\n').split('\t')
+    if len(f)<8: continue
+    chrom,pos,ref,alt=f[0],int(f[1]),f[3],f[4].split(',')[0]
+    if len(ref)!=1 or len(alt)!=1:
+        f[7] = append_info(f[7], missing_vals)
+        print('\t'.join(f)); continue
+    m=metrics(chrom,pos,ref,alt)
+    pct=(100.0*m['ge']/m['support']) if m['support'] else 0.0
+    vals=[f'alt_support_reads={m["support"]}',f'alt_reads_with_AS={m["as"]}',f'alt_reads_with_XS={m["xs"]}',f'alt_reads_with_both_AS_XS={m["both"]}',f'alt_XS_ge_AS_n={m["ge"]}',f'alt_XS_ge_AS_pct={pct:.6f}',f'alt_XS_eq_AS_n={m["eq"]}',f'alt_XS_gt_AS_n={m["gt"]}',f'alt_reads_without_XS_ge_AS={m["support"]-m["ge"]}',f'AMBIGUITY_METRICS_SOURCE={metrics_source}']
+    f[7] = append_info(f[7], vals)
+    print('\t'.join(f))
+PY_AMBIGUITY
+
+    bcftools view "\${SAMPLE_ID}.round2.consensus_coord.input.vcf.gz" \
+      | python3 add_ambiguity_metrics.py "${std_chrM_bam}" "round2_consensus_bam_consensus_coords" \
+      | bgzip -c > "\${SAMPLE_ID}.round2.consensus.final.split.with_ambiguity.vcf.gz"
+    tabix -p vcf -f "\${SAMPLE_ID}.round2.consensus.final.split.with_ambiguity.vcf.gz"
+
     python3 - <<'PY_LIFTBACK'
 import gzip
 import re
@@ -1567,7 +1669,7 @@ from collections import Counter
 sample = "${meta.id}"
 orig_fasta = Path(f"{sample}.original_mt.fa")
 cons_sites_vcf = Path("${consensus_sites_vcf}")
-round2_vcf = Path(f"{sample}.round2.consensus_coord.input.vcf.gz")
+round2_vcf = Path(f"{sample}.round2.consensus.final.split.with_ambiguity.vcf.gz")
 out_vcf = Path(f"{sample}.round2.original_coords.clean.final.split.vcf")
 unresolved_tsv = Path(f"{sample}.round2.original_coords.unresolved.tsv")
 skipped_overlap_tsv = Path(f"{sample}.round2.original_coords.skipped_overlap_consensus_sites.tsv")
@@ -2000,6 +2102,37 @@ def set_source(info, source):
     parts.append(f"SOURCE={source}")
     return ";".join(parts) if parts else "."
 
+AMBIGUITY_KEYS = {
+    "alt_support_reads",
+    "alt_reads_with_AS",
+    "alt_reads_with_XS",
+    "alt_reads_with_both_AS_XS",
+    "alt_XS_ge_AS_n",
+    "alt_XS_ge_AS_pct",
+    "alt_XS_eq_AS_n",
+    "alt_XS_gt_AS_n",
+    "alt_reads_without_XS_ge_AS",
+    "AMBIGUITY_METRICS_SOURCE",
+}
+
+
+def add_not_computed_ambiguity(info, reason):
+    parts = [x for x in parse_info(info) if x]
+    parts = [x for x in parts if x.split("=", 1)[0] not in AMBIGUITY_KEYS]
+    parts.extend([
+        "alt_support_reads=.",
+        "alt_reads_with_AS=.",
+        "alt_reads_with_XS=.",
+        "alt_reads_with_both_AS_XS=.",
+        "alt_XS_ge_AS_n=.",
+        "alt_XS_ge_AS_pct=.",
+        "alt_XS_eq_AS_n=.",
+        "alt_XS_gt_AS_n=.",
+        "alt_reads_without_XS_ge_AS=.",
+        f"AMBIGUITY_METRICS_SOURCE={reason}",
+    ])
+    return ";".join(parts) if parts else "."
+
 
 def read_headers(path):
     meta = []
@@ -2032,6 +2165,12 @@ def iter_records(path):
 
 def record_key(f):
     return (f[0], int(f[1]), f[3], f[4])
+
+
+def record_ref_alt_flip_key(f):
+    # Detect the same coordinate/alleles represented in the opposite direction,
+    # e.g. a Round 2 residual call that reverses a Round 1 consensus-basis call.
+    return (f[0], int(f[1]), f[4], f[3])
 
 
 def record_span(f):
@@ -2084,6 +2223,7 @@ stats = Counter()
 # Deduplicate exact duplicate Round 1 records after normalization.
 consensus_records = []
 consensus_keys = set()
+consensus_flip_keys = {}
 consensus_spans = []
 for f in iter_records(consensus_sites_vcf):
     key = record_key(f)
@@ -2103,12 +2243,14 @@ for f in iter_records(consensus_sites_vcf):
         stats["round1_overlap_records_kept_in_final_vcf"] += 1
 
     f[7] = set_source(f[7], "round1_consensus_basis")
+    f[7] = add_not_computed_ambiguity(f[7], "not_computed_round1_basis")
     consensus_keys.add(key)
+    consensus_flip_keys[record_ref_alt_flip_key(f)] = variant_string(f)
     consensus_records.append(f)
     consensus_spans.append((cs_span, variant_string(f)))
 
-# Keep only Round 2 calls that are not exact duplicates of, and do not overlap,
-# any Round 1 consensus-basis variant.
+# Keep only Round 2 calls that are not exact duplicates of, REF/ALT flips of,
+# or overlapping any Round 1 consensus-basis variant.
 round2_records = []
 with conflict_tsv.open("w") as conflict:
     conflict.write("sample\\tround2_variant\\tdrop_reason\\toverlapping_round1_variant\\n")
@@ -2119,6 +2261,12 @@ with conflict_tsv.open("w") as conflict:
         if key in consensus_keys:
             stats["round2_exact_duplicate_dropped_round1_preferred"] += 1
             conflict.write(f"{sample}\\t{r2_var}\\texact_duplicate_round1_preferred\\t{r2_var}\\n")
+            continue
+
+        flip_hit = consensus_flip_keys.get(key)
+        if flip_hit is not None:
+            stats["round2_ref_alt_flip_dropped_round1_preferred"] += 1
+            conflict.write(f"{sample}\\t{r2_var}\\tref_alt_flip_round1_preferred\\t{flip_hit}\\n")
             continue
 
         r2_span = record_span(f)
@@ -2160,6 +2308,7 @@ with merge_summary_tsv.open("w") as ms:
 print(f"[INFO] Round1 consensus-basis records kept: {len(consensus_records)}")
 print(f"[INFO] Round2 residual records kept after Round1 priority filtering: {len(round2_records)}")
 print(f"[INFO] Round2 exact duplicates dropped: {stats['round2_exact_duplicate_dropped_round1_preferred']}")
+print(f"[INFO] Round2 REF/ALT flips dropped: {stats['round2_ref_alt_flip_dropped_round1_preferred']}")
 print(f"[INFO] Round2 overlapping records dropped: {stats['round2_overlap_dropped_round1_preferred']}")
 print(f"[INFO] Merge conflict report: {conflict_tsv}")
 PY_MERGE_CONSENSUS_SITES
@@ -2176,96 +2325,100 @@ PY_MERGE_CONSENSUS_SITES
         -f "\${SAMPLE_ID}.original_mt.fa" \
         -m-any \
         "\${SAMPLE_ID}.round2.original_coords.with_consensus_basis.sorted.vcf.gz" \
-        -Oz -o "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_ambiguity.vcf.gz"
+        -Oz -o "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_stack_indel_filter.vcf.gz"
 
-    # Add read-level ambiguity metrics for ALT-supporting reads from the filtered
-    # standard chrM-assigned BAM.  SNVs are evaluated directly at the lifted-back
-    # position; non-SNV records retain the same fields with zero ALT-support when
-    # a per-read allele cannot be represented as a single base.
-    cat > add_ambiguity_metrics.py <<'PY_AMBIGUITY'
-import subprocess, sys
-bam = sys.argv[1]
-metric_headers = [
-('alt_support_reads','1','Integer','ALT-supporting reads inspected in the chrM BAM'),
-('alt_reads_with_AS','1','Integer','ALT-supporting reads carrying an AS tag'),
-('alt_reads_with_XS','1','Integer','ALT-supporting reads carrying an XS tag'),
-('alt_reads_with_both_AS_XS','1','Integer','ALT-supporting reads carrying both AS and XS tags'),
-('alt_XS_ge_AS_n','1','Integer','ALT-supporting reads with XS >= AS'),
-('alt_XS_ge_AS_pct','1','Float','Percentage of ALT-supporting reads with XS >= AS'),
-('alt_XS_eq_AS_n','1','Integer','ALT-supporting reads with XS == AS'),
-('alt_XS_gt_AS_n','1','Integer','ALT-supporting reads with XS > AS'),
-('alt_reads_without_XS_ge_AS','1','Integer','ALT-supporting reads without XS >= AS'),
-]
+    tabix -p vcf -f "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_stack_indel_filter.vcf.gz"
 
-def tags(fields):
-    d={}
-    for x in fields[11:]:
-        p=x.split(':',2)
-        if len(p)==3 and p[1]=='i':
-            try: d[p[0]]=int(p[2])
-            except ValueError: pass
-    return d
+    # Remove stacked indels from the final original-coordinate VCF. If multiple
+    # indel records share the same CHROM:POS, remove all of those indel records;
+    # SNVs at the same position are retained.
+    cat > remove_stacked_indels.py <<'PY_STACKED_INDELS'
+#!/usr/bin/env python3
+import gzip
+import sys
+from collections import Counter
 
-def cigar_base(pos, rec):
-    fields=rec.rstrip('\\n').split('\\t')
-    if len(fields)<11: return None, {}
-    import re
-    ref=int(fields[3]); read=0; seq=fields[9]
-    for n,op in re.findall(r'(\\d+)([MIDNSHP=X])', fields[5]):
-        n=int(n)
-        if op in 'M=X':
-            if ref <= pos < ref+n:
-                idx=read+(pos-ref)
-                return (seq[idx].upper() if idx < len(seq) else None), tags(fields)
-            ref += n; read += n
-        elif op in 'DN':
-            ref += n
-        elif op in 'IS':
-            read += n
-    return None, tags(fields)
+vcf_in = sys.argv[1]
+vcf_out = sys.argv[2]
+summary_out = sys.argv[3]
 
-def metrics(chrom,pos,ref,alt):
-    c={k:0 for k in ['support','as','xs','both','ge','eq','gt']}
-    if len(ref)!=1 or len(alt)!=1: return c
-    region=f'{chrom}:{pos}-{pos}'
-    try:
-        out=subprocess.check_output(['samtools','view',bam,region], text=True)
-    except subprocess.CalledProcessError:
-        out=''
-    for rec in out.splitlines():
-        base,t=cigar_base(pos, rec)
-        if base != alt.upper(): continue
-        c['support']+=1
-        has_as='AS' in t; has_xs='XS' in t
-        c['as']+=has_as; c['xs']+=has_xs; c['both']+=(has_as and has_xs)
-        if has_as and has_xs:
-            c['ge'] += t['XS'] >= t['AS']; c['eq'] += t['XS'] == t['AS']; c['gt'] += t['XS'] > t['AS']
-    return c
+def open_text(path, mode="rt"):
+    if str(path).endswith(".gz"):
+        return gzip.open(path, mode)
+    return open(path, mode)
 
-for line in sys.stdin:
-    if line.startswith('##'):
-        sys.stdout.write(line); continue
-    if line.startswith('#CHROM'):
-        for mid,num,typ,desc in metric_headers:
-            print(f'##INFO=<ID={mid},Number={num},Type={typ},Description="{desc}">')
-        sys.stdout.write(line); continue
-    f=line.rstrip('\\n').split('\\t')
-    if len(f)<8: continue
-    chrom,pos,ref,alt=f[0],int(f[1]),f[3],f[4].split(',')[0]
-    m=metrics(chrom,pos,ref,alt)
-    pct=(100.0*m['ge']/m['support']) if m['support'] else 0.0
-    vals=[f'alt_support_reads={m["support"]}',f'alt_reads_with_AS={m["as"]}',f'alt_reads_with_XS={m["xs"]}',f'alt_reads_with_both_AS_XS={m["both"]}',f'alt_XS_ge_AS_n={m["ge"]}',f'alt_XS_ge_AS_pct={pct:.6f}',f'alt_XS_eq_AS_n={m["eq"]}',f'alt_XS_gt_AS_n={m["gt"]}',f'alt_reads_without_XS_ge_AS={m["support"]-m["ge"]}']
-    f[7] = (';'.join([f[7]] + vals) if f[7] not in ('','.') else ';'.join(vals))
-    print('\\t'.join(f))
-PY_AMBIGUITY
+def is_indel(ref, alt):
+    return len(ref) != 1 or len(alt) != 1
 
-    bcftools view "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_ambiguity.vcf.gz" \
-      | python3 add_ambiguity_metrics.py "${std_chrM_bam}" \
-      > "\${SAMPLE_ID}.round2.original_coords.clean.final.split.with_ambiguity.vcf"
+headers = []
+records = []
 
-    bgzip -f "\${SAMPLE_ID}.round2.original_coords.clean.final.split.with_ambiguity.vcf"
-    mv "\${SAMPLE_ID}.round2.original_coords.clean.final.split.with_ambiguity.vcf.gz" "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
+with open_text(vcf_in, "rt") as handle:
+    for line in handle:
+        if line.startswith("##"):
+            headers.append(line)
+            continue
+        if line.startswith("#CHROM"):
+            headers.append(
+                '##stacked_indel_filter=Indel records were removed when multiple indels occurred at the same CHROM:POS in the final original-coordinate VCF.\n'
+            )
+            headers.append(line)
+            continue
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        f = line.split("\t")
+        if len(f) < 8:
+            continue
+        chrom = f[0]
+        pos = int(f[1])
+        ref = f[3]
+        alt = f[4].split(",")[0]
+        indel = is_indel(ref, alt)
+        records.append((line, chrom, pos, ref, alt, indel))
 
+indel_pos_counts = Counter()
+for line, chrom, pos, ref, alt, indel in records:
+    if indel:
+        indel_pos_counts[(chrom, pos)] += 1
+
+stacked_indel_positions = {key for key, n in indel_pos_counts.items() if n > 1}
+
+removed = []
+kept = []
+
+for rec in records:
+    line, chrom, pos, ref, alt, indel = rec
+    if indel and (chrom, pos) in stacked_indel_positions:
+        removed.append(rec)
+    else:
+        kept.append(rec)
+
+with open_text(vcf_out, "wt") as out:
+    for h in headers:
+        out.write(h)
+    for rec in kept:
+        out.write(rec[0] + "\n")
+
+with open(summary_out, "w") as out:
+    out.write("metric\tvalue\n")
+    out.write(f"total_records_before_stack_indel_filter\t{len(records)}\n")
+    out.write(f"records_after_stack_indel_filter\t{len(kept)}\n")
+    out.write(f"stacked_indel_records_removed\t{len(removed)}\n")
+    out.write(f"stacked_indel_positions_removed\t{len(stacked_indel_positions)}\n")
+    out.write("\n")
+    out.write("removed_stacked_indels\n")
+    out.write("CHROM\tPOS\tREF\tALT\n")
+    for line, chrom, pos, ref, alt, indel in removed:
+        out.write(f"{chrom}\t{pos}\t{ref}\t{alt}\n")
+PY_STACKED_INDELS
+
+    python3 remove_stacked_indels.py \
+      "\${SAMPLE_ID}.round2.original_coords.clean.final.split.pre_stack_indel_filter.vcf.gz" \
+      "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf" \
+      "\${SAMPLE_ID}.round2.original_coords.stacked_indel_filter.summary.tsv"
+
+    bgzip -f "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf"
     tabix -p vcf -f "\${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
 
     {
