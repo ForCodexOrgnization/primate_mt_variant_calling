@@ -2167,6 +2167,12 @@ def record_key(f):
     return (f[0], int(f[1]), f[3], f[4])
 
 
+def record_ref_alt_flip_key(f):
+    # Detect the same coordinate/alleles represented in the opposite direction,
+    # e.g. a Round 2 residual call that reverses a Round 1 consensus-basis call.
+    return (f[0], int(f[1]), f[4], f[3])
+
+
 def record_span(f):
     # Return the original-reference interval occupied by the VCF REF allele.
     chrom = f[0]
@@ -2217,6 +2223,7 @@ stats = Counter()
 # Deduplicate exact duplicate Round 1 records after normalization.
 consensus_records = []
 consensus_keys = set()
+consensus_flip_keys = {}
 consensus_spans = []
 for f in iter_records(consensus_sites_vcf):
     key = record_key(f)
@@ -2238,11 +2245,12 @@ for f in iter_records(consensus_sites_vcf):
     f[7] = set_source(f[7], "round1_consensus_basis")
     f[7] = add_not_computed_ambiguity(f[7], "not_computed_round1_basis")
     consensus_keys.add(key)
+    consensus_flip_keys[record_ref_alt_flip_key(f)] = variant_string(f)
     consensus_records.append(f)
     consensus_spans.append((cs_span, variant_string(f)))
 
-# Keep only Round 2 calls that are not exact duplicates of, and do not overlap,
-# any Round 1 consensus-basis variant.
+# Keep only Round 2 calls that are not exact duplicates of, REF/ALT flips of,
+# or overlapping any Round 1 consensus-basis variant.
 round2_records = []
 with conflict_tsv.open("w") as conflict:
     conflict.write("sample\\tround2_variant\\tdrop_reason\\toverlapping_round1_variant\\n")
@@ -2253,6 +2261,12 @@ with conflict_tsv.open("w") as conflict:
         if key in consensus_keys:
             stats["round2_exact_duplicate_dropped_round1_preferred"] += 1
             conflict.write(f"{sample}\\t{r2_var}\\texact_duplicate_round1_preferred\\t{r2_var}\\n")
+            continue
+
+        flip_hit = consensus_flip_keys.get(key)
+        if flip_hit is not None:
+            stats["round2_ref_alt_flip_dropped_round1_preferred"] += 1
+            conflict.write(f"{sample}\\t{r2_var}\\tref_alt_flip_round1_preferred\\t{flip_hit}\\n")
             continue
 
         r2_span = record_span(f)
@@ -2294,6 +2308,7 @@ with merge_summary_tsv.open("w") as ms:
 print(f"[INFO] Round1 consensus-basis records kept: {len(consensus_records)}")
 print(f"[INFO] Round2 residual records kept after Round1 priority filtering: {len(round2_records)}")
 print(f"[INFO] Round2 exact duplicates dropped: {stats['round2_exact_duplicate_dropped_round1_preferred']}")
+print(f"[INFO] Round2 REF/ALT flips dropped: {stats['round2_ref_alt_flip_dropped_round1_preferred']}")
 print(f"[INFO] Round2 overlapping records dropped: {stats['round2_overlap_dropped_round1_preferred']}")
 print(f"[INFO] Merge conflict report: {conflict_tsv}")
 PY_MERGE_CONSENSUS_SITES
