@@ -1596,11 +1596,11 @@ def tags(fields):
     return d
 
 def cigar_base(pos, rec):
-    fields=rec.rstrip('\n').split('\t')
+    fields=rec.rstrip('\\n').split('\\t')
     if len(fields)<11: return None, {}
     import re
     ref=int(fields[3]); read=0; seq=fields[9]
-    for n,op in re.findall(r'(\d+)([MIDNSHP=X])', fields[5]):
+    for n,op in re.findall(r'(\\d+)([MIDNSHP=X])', fields[5]):
         n=int(n)
         if op in 'M=X':
             if ref <= pos < ref+n:
@@ -1642,17 +1642,17 @@ for line in sys.stdin:
         for mid,num,typ,desc in metric_headers:
             print(f'##INFO=<ID={mid},Number={num},Type={typ},Description="{desc}">')
         sys.stdout.write(line); continue
-    f=line.rstrip('\n').split('\t')
+    f=line.rstrip('\\n').split('\\t')
     if len(f)<8: continue
     chrom,pos,ref,alt=f[0],int(f[1]),f[3],f[4].split(',')[0]
     if len(ref)!=1 or len(alt)!=1:
         f[7] = append_info(f[7], missing_vals)
-        print('\t'.join(f)); continue
+        print('\\t'.join(f)); continue
     m=metrics(chrom,pos,ref,alt)
     pct=(100.0*m['ge']/m['support']) if m['support'] else 0.0
     vals=[f'alt_support_reads={m["support"]}',f'alt_reads_with_AS={m["as"]}',f'alt_reads_with_XS={m["xs"]}',f'alt_reads_with_both_AS_XS={m["both"]}',f'alt_XS_ge_AS_n={m["ge"]}',f'alt_XS_ge_AS_pct={pct:.6f}',f'alt_XS_eq_AS_n={m["eq"]}',f'alt_XS_gt_AS_n={m["gt"]}',f'alt_reads_without_XS_ge_AS={m["support"]-m["ge"]}',f'AMBIGUITY_METRICS_SOURCE={metrics_source}']
     f[7] = append_info(f[7], vals)
-    print('\t'.join(f))
+    print('\\t'.join(f))
 PY_AMBIGUITY
 
     bcftools view "\${SAMPLE_ID}.round2.consensus_coord.input.vcf.gz" \
