@@ -183,18 +183,16 @@ process DOWNLOAD_FASTQ {
     set -Eeuo pipefail
 
     cleanup_download_outputs() {
-        echo "WARN: DOWNLOAD_FASTQ interrupted or failed for ${meta.id}; removing downloaded FASTQ partial outputs." >&2
-        rm -rf fastqs
+        echo "WARN: DOWNLOAD_FASTQ interrupted or failed for ${meta.id}; keeping downloaded FASTQ files for possible resume." >&2
         rm -f report.tsv fastq_pairs.tsv failed_download.tsv
     }
 
     trap cleanup_download_outputs INT TERM HUP QUIT ERR
 
-    # Clean stale outputs from a previous failed/cancelled attempt before retrying.
-    rm -rf fastqs
-    rm -f report.tsv fastq_pairs.tsv failed_download.tsv
-
     mkdir -p fastqs
+
+    # Do not remove fastqs here. Keep completed or partial downloads so aria2c -c can resume.
+    rm -f report.tsv fastq_pairs.tsv failed_download.tsv
     ena_base="https://www.ebi.ac.uk/ena/portal/api"
     acc="${meta.id}"
 
@@ -261,6 +259,18 @@ process DOWNLOAD_FASTQ {
                 rm -f "\$target" "\$target.aria2"
                 record_failed_download "\$run_id" "\$fastq_file" "MISSING_MD5"
                 return 1
+            fi
+
+            if [[ -s "\$target" ]]; then
+                echo "INFO: Existing FASTQ found for \$target; checking gzip and MD5..."
+                if gzip -t "\$target" && echo "\$expected_md5  \$target" | md5sum -c -; then
+                    echo "INFO: Existing FASTQ passed gzip and MD5; skipping download for \$target."
+                    rm -f "\$target.aria2"
+                    return 0
+                else
+                    echo "WARN: Existing FASTQ failed gzip or MD5 validation; removing and re-downloading \$target." >&2
+                    rm -f "\$target" "\$target.aria2"
+                fi
             fi
 
             local attempt=1
