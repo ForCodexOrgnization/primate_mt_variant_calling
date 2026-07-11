@@ -20,6 +20,7 @@ else
     ROUND1_OUTDIR="${ROUND1_OUTDIR:-${OUTPUT_DIR}}"
 fi
 
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 module load Nextflow/24.10.2
 # ==============================================================================
 
@@ -51,6 +52,7 @@ if [ -n "${BATCH_FILE:-}" ]; then
     echo "  WORK_DIR=${WORK_DIR}"
 
     nextflow run "${SUBMIT_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${WORK_DIR}" \
@@ -120,6 +122,7 @@ else
 
     set +e
     nextflow run "${SUBMIT_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${WORK_DIR}" \

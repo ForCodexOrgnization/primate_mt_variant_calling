@@ -14,6 +14,7 @@ CONCURRENT_BATCHES=2
 NF_BASE_WORK_DIR="/nfs/roberts/pi/pi_njl27/lt692/primate_tmp/nf_work_dir"
 OUTPUT_DIR="/nfs/roberts/pi/pi_njl27/lt692/primate_results"
 
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 module load Nextflow/24.10.2
 # ==============================================================================
 
@@ -80,6 +81,7 @@ else
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
 
     nextflow run "${SUBMIT_DIR}/primate_pipeline.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${WORK_DIR}" \

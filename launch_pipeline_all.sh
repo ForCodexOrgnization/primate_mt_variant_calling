@@ -7,6 +7,39 @@
 
 set -euo pipefail
 
+usage() {
+    cat >&2 <<USAGE
+Usage: launch_pipeline_all.sh [--config FILE]
+
+Select the Nextflow config passed to preprocessing, NUMT, round1, and round2 launchers.
+Defaults to NF_CONFIG_FILE or nextflow.config. For MCC, use --config nextflow_mcc.config.
+USAGE
+}
+
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config|-c)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a config file" >&2; usage; exit 1; }
+            NF_CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --config=*)
+            NF_CONFIG_FILE="${1#*=}"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
 # ==============================================================================
 # Chain preprocessing -> NUMT discovery -> round 1 -> round 2 and validate hand-off files.
 # Run from the repository directory on a login/submission node:
@@ -204,6 +237,7 @@ log "Sample list: ${FULL_SAMPLE_LIST}"
 log "Preprocessing output dir: ${PRE_OUTPUT_DIR}"
 log "Round output dir: ${ROUND_OUTPUT_DIR}"
 log "Nextflow base work dir: ${NF_BASE_WORK_DIR}"
+log "Nextflow config file: ${NF_CONFIG_FILE}"
 log "Preprocessing Nextflow work dir: ${PRE_NF_BASE_WORK_DIR}"
 log "Round 1 Nextflow work dir: ${ROUND1_NF_BASE_WORK_DIR}"
 log "Round 2 Nextflow work dir: ${ROUND2_NF_BASE_WORK_DIR}"
@@ -216,23 +250,23 @@ log "Batch size: ${BATCH_SIZE}"
 log "Concurrent batches: ${CONCURRENT_BATCHES}"
 log "NUMT concurrent samples: ${NUMT_CONCURRENT}"
 
-pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}")"
+pre_job="$(submit_step preprocess "${PRE_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}" NF_CONFIG_FILE="${NF_CONFIG_FILE}")"
 wait_for_job "${pre_job}" preprocess
 validate_pre_to_round1
 
 if numt_outputs_complete; then
     log "Skipping NUMT discovery; all high-confidence NUMT BED outputs already exist under ${NUMT_BESTHIT_OUTDIR}"
 else
-    numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}" CONCURRENT="${NUMT_CONCURRENT}")"
+    numt_job="$(submit_step numt "${NUMT_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}" CONCURRENT="${NUMT_CONCURRENT}" NF_CONFIG_FILE="${NF_CONFIG_FILE}")"
     wait_for_job "${numt_job}" numt
 fi
 validate_numt_to_round1
 
-round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}")"
+round1_job="$(submit_step round1 "${ROUND1_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}" NF_CONFIG_FILE="${NF_CONFIG_FILE}")"
 wait_for_job "${round1_job}" round1
 validate_round1_to_round2
 
-round2_job="$(submit_step round2 "${ROUND2_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}")"
+round2_job="$(submit_step round2 "${ROUND2_LAUNCH_SCRIPT}" FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${CONCURRENT_BATCHES}" NF_CONFIG_FILE="${NF_CONFIG_FILE}")"
 wait_for_job "${round2_job}" round2
 validate_round2_final
 

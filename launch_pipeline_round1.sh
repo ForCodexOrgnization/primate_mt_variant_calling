@@ -22,6 +22,7 @@ else
     NUMT_BED_DIR="${NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict}"
 fi
 
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 module load Nextflow/24.10.2
 # ==============================================================================
 
@@ -77,6 +78,7 @@ if [ -n "${BATCH_FILE:-}" ]; then
     echo "  WORK_DIR=${WORK_DIR}"
 
     nextflow run "${SUBMIT_DIR}/primate_pipeline_numt_decoy_round1.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${WORK_DIR}" \
@@ -149,6 +151,7 @@ else
 
     set +e
     nextflow run "${SUBMIT_DIR}/primate_pipeline_numt_decoy_round1.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${WORK_DIR}" \
