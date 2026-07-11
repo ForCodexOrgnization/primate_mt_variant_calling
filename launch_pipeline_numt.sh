@@ -43,6 +43,7 @@ BESTHIT_OUTDIR="${BESTHIT_OUTDIR:?Set BESTHIT_OUTDIR for high-confidence NUMT BE
 BATCH_SIZE="${BATCH_SIZE:-1}"
 CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
 CONCURRENT="${CONCURRENT:-${CONCURRENT_BATCHES}}"
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 
 [[ -d "${NUMT_DIR}" ]] || { echo "ERROR: bundled numt_detection directory does not exist: ${NUMT_DIR}" >&2; exit 1; }
 [[ -f "${FULL_SAMPLE_LIST}" ]] || { echo "ERROR: FULL_SAMPLE_LIST does not exist: ${FULL_SAMPLE_LIST}" >&2; exit 1; }
@@ -119,6 +120,7 @@ BESTHIT_OUTDIR=${BESTHIT_OUTDIR}
 CONFIG
 
 echo "INFO: BATCH_ID=${BATCH_ID:-unset}" >&2
+echo "INFO: NF_CONFIG_FILE=${NF_CONFIG_FILE} (accepted for chained launcher consistency; NUMT uses its generated --config file)" >&2
 echo "INFO: FULL_SAMPLE_LIST=${FULL_SAMPLE_LIST}" >&2
 echo "INFO: Clean sample TSV: ${clean_samples}" >&2
 echo "INFO: Auto config: ${auto_config}" >&2

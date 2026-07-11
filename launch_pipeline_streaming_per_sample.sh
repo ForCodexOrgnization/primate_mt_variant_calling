@@ -38,6 +38,7 @@ NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_streaming_per_sample}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-10}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-0}"
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 LOG_DIR="${LOG_DIR:-log_streaming}"
 
 log() {
@@ -122,6 +123,7 @@ else
     (
         cd "${PRE_LAUNCH_DIR}"
         nextflow run "${REPO_DIR}/preprocessing.nf" \
+            -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)" \
             -profile cluster \
             -resume \
             -w "${PRE_WORK_DIR}" \
@@ -169,6 +171,7 @@ log "Starting round 1 for ${SAMPLE_ID}"
 (
     cd "${ROUND1_LAUNCH_DIR}"
     nextflow run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${ROUND1_WORK_DIR}" \
@@ -195,6 +198,7 @@ log "Starting round 2 for ${SAMPLE_ID}"
 (
     cd "${ROUND2_LAUNCH_DIR}"
     nextflow run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
+        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)" \
         -profile cluster \
         -resume \
         -w "${ROUND2_WORK_DIR}" \

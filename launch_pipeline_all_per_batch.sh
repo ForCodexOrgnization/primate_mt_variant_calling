@@ -41,6 +41,7 @@ NUMT_CONCURRENT="${NUMT_CONCURRENT:-${CONCURRENT:-${CHAIN_CONCURRENT_BATCHES}}}"
 POLL_SECONDS="${POLL_SECONDS:-120}"
 LOG_DIR="${LOG_DIR:-log_all_per_batch}"
 BATCH_LIST_DIR="${BATCH_LIST_DIR:-${NF_BASE_WORK_DIR}/batch_lists}"
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
     repo_dir="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
@@ -57,6 +58,7 @@ echo "INFO: ROUND1_OUTDIR=${ROUND1_OUTDIR}"
 echo "INFO: NUMT_DISCOVERY_OUTROOT=${NUMT_DISCOVERY_OUTROOT}"
 echo "INFO: NUMT_BESTHIT_OUTDIR=${NUMT_BESTHIT_OUTDIR}"
 echo "INFO: NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
+echo "INFO: NF_CONFIG_FILE=${NF_CONFIG_FILE}"
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -103,7 +105,7 @@ submit_and_wait_numt() {
     env FULL_SAMPLE_LIST="${batch_file}" BATCH_ID="batch_${batch_id}" PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR}" GLOBAL_REF_DIR="${GLOBAL_REF_DIR}" \
         NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR}" REF_DIR="${REF_DIR}" DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT}" \
         BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR}" BATCH_SIZE="${BATCH_SIZE}" CONCURRENT_BATCHES="${NUMT_CONCURRENT}" \
-        CONCURRENT="${NUMT_CONCURRENT}" bash "${NUMT_LAUNCH_SCRIPT}" 2>&1 | tee "${submit_log}" >&2
+        CONCURRENT="${NUMT_CONCURRENT}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" bash "${NUMT_LAUNCH_SCRIPT}" 2>&1 | tee "${submit_log}" >&2
     local job_id
     job_id="$({ sed -n 's/.*Submitted batch job \([0-9][0-9]*\).*/\1/p' "${submit_log}" || true; } | tail -n 1)"
     if [[ -n "${job_id}" ]]; then
@@ -166,7 +168,7 @@ validate_round2_final() {
 run_chain() {
     local batch_file="$1" batch_id="$2"
     log "Starting per-batch chain ${batch_id}: ${batch_file}"
-    env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" bash "${PRE_LAUNCH_SCRIPT}"
+    env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" bash "${PRE_LAUNCH_SCRIPT}"
     validate_pre_to_round1 "${batch_file}"
     submit_and_wait_numt "${batch_file}" "${batch_id}"
     validate_numt_to_round1 "${batch_file}"
@@ -176,14 +178,14 @@ run_chain() {
     log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
     log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
     log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
-    env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" bash "${ROUND1_LAUNCH_SCRIPT}"
+    env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" bash "${ROUND1_LAUNCH_SCRIPT}"
     validate_round1_to_round2 "${batch_file}"
     log "Launching round2 for ${batch_id}"
     log "  BATCH_FILE=${batch_file}"
     log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
     log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
     log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
-    env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" bash "${ROUND2_LAUNCH_SCRIPT}"
+    env BATCH_FILE="${batch_file}" BATCH_ID="batch_${batch_id}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" bash "${ROUND2_LAUNCH_SCRIPT}"
     validate_round2_final "${batch_file}"
     log "Completed per-batch chain ${batch_id}"
 }
