@@ -267,6 +267,7 @@ process DOWNLOAD_FASTQ {
             while (( attempt <= ${max_download_attempts} )); do
                 echo "INFO: Downloading \$url with aria2c (attempt \$attempt/${max_download_attempts})..."
                 ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 \
+                    --file-allocation=none \
                     --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url"
 
                 if ! gzip -t "\$target"; then
