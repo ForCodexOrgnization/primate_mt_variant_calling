@@ -2360,14 +2360,14 @@ with open_text(vcf_in, "rt") as handle:
             continue
         if line.startswith("#CHROM"):
             headers.append(
-                '##stacked_indel_filter=Indel records were removed when multiple indels occurred at the same CHROM:POS in the final original-coordinate VCF.\n'
+                '##stacked_indel_filter=Indel records were removed when multiple indels occurred at the same CHROM:POS in the final original-coordinate VCF.\\n'
             )
             headers.append(line)
             continue
-        line = line.rstrip("\n")
+        line = line.rstrip("\\n")
         if not line:
             continue
-        f = line.split("\t")
+        f = line.split("\\t")
         if len(f) < 8:
             continue
         chrom = f[0]
@@ -2398,19 +2398,19 @@ with open_text(vcf_out, "wt") as out:
     for h in headers:
         out.write(h)
     for rec in kept:
-        out.write(rec[0] + "\n")
+        out.write(rec[0] + "\\n")
 
 with open(summary_out, "w") as out:
-    out.write("metric\tvalue\n")
-    out.write(f"total_records_before_stack_indel_filter\t{len(records)}\n")
-    out.write(f"records_after_stack_indel_filter\t{len(kept)}\n")
-    out.write(f"stacked_indel_records_removed\t{len(removed)}\n")
-    out.write(f"stacked_indel_positions_removed\t{len(stacked_indel_positions)}\n")
-    out.write("\n")
-    out.write("removed_stacked_indels\n")
-    out.write("CHROM\tPOS\tREF\tALT\n")
+    out.write("metric\\tvalue\\n")
+    out.write(f"total_records_before_stack_indel_filter\\t{len(records)}\\n")
+    out.write(f"records_after_stack_indel_filter\\t{len(kept)}\\n")
+    out.write(f"stacked_indel_records_removed\\t{len(removed)}\\n")
+    out.write(f"stacked_indel_positions_removed\\t{len(stacked_indel_positions)}\\n")
+    out.write("\\n")
+    out.write("removed_stacked_indels\\n")
+    out.write("CHROM\\tPOS\\tREF\\tALT\\n")
     for line, chrom, pos, ref, alt, indel in removed:
-        out.write(f"{chrom}\t{pos}\t{ref}\t{alt}\n")
+        out.write(f"{chrom}\\t{pos}\\t{ref}\\t{alt}\\n")
 PY_STACKED_INDELS
 
     python3 remove_stacked_indels.py \
