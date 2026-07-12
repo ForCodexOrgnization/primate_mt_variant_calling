@@ -135,8 +135,7 @@ else
     log "Starting preprocessing for ${SAMPLE_ID}"
     (
         cd "${PRE_LAUNCH_DIR}"
-        nextflow run "${REPO_DIR}/preprocessing.nf" \
-            -C "${NF_CONFIG_PATH}" \
+        nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/preprocessing.nf" \
             -profile cluster \
             -resume \
             -w "${PRE_WORK_DIR}" \
@@ -179,8 +178,7 @@ CONFIG
     log "Starting NUMT discovery for ${SAMPLE_ID} with config ${NUMT_CONFIG}"
     log "Generated NUMT config for ${SAMPLE_ID}:"
     sed 's/^/  /' "${NUMT_CONFIG}" >&2
-    nextflow run "${NUMT_DIR}/numt_end2end.nf" \
-        -C "${NF_CONFIG_PATH}" \
+    nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_DIR}/numt_end2end.nf" \
         -profile cluster \
         -resume \
         -w "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
@@ -194,8 +192,7 @@ log "NUMT validation passed for ${SAMPLE_ID}"
 log "Starting round 1 for ${SAMPLE_ID}"
 (
     cd "${ROUND1_LAUNCH_DIR}"
-    nextflow run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
-        -C "${NF_CONFIG_PATH}" \
+    nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
         -profile cluster \
         -resume \
         -w "${ROUND1_WORK_DIR}" \
@@ -221,8 +218,7 @@ log "Round 1 validation passed for ${SAMPLE_ID}"
 log "Starting round 2 for ${SAMPLE_ID}"
 (
     cd "${ROUND2_LAUNCH_DIR}"
-    nextflow run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
-        -C "${NF_CONFIG_PATH}" \
+    nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
         -profile cluster \
         -resume \
         -w "${ROUND2_WORK_DIR}" \
