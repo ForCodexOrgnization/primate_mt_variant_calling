@@ -155,11 +155,14 @@ CRAM_ROOT_2=${PRE_OUTPUT_DIR}
 WHOLE_REF_DIR=${GLOBAL_REF_DIR}
 NUCLEAR_ONLY_REF_DIR=${NUCLEAR_ONLY_REF_DIR}
 CHRM_REF_DIR=${REF_DIR}
+DISCOVERY_OUTDIR=${NUMT_DISCOVERY_OUTROOT}
 DISCOVERY_OUTROOT=${NUMT_DISCOVERY_OUTROOT}
 BESTHIT_OUTDIR=${NUMT_BESTHIT_OUTDIR}
 CONFIG
 
     grep -q '^SAMPLE=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing SAMPLE=: ${NUMT_CONFIG}"
+    grep -q '^DISCOVERY_OUTDIR=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing DISCOVERY_OUTDIR=: ${NUMT_CONFIG}"
+    grep -q '^BESTHIT_OUTDIR=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing BESTHIT_OUTDIR=: ${NUMT_CONFIG}"
     log "Starting NUMT discovery for ${SAMPLE_ID} with config ${NUMT_CONFIG}"
     log "Generated NUMT config for ${SAMPLE_ID}:"
     sed 's/^/  /' "${NUMT_CONFIG}" >&2
