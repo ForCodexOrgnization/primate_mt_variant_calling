@@ -1,22 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Centralized environment setup for NUMT pipeline on HPC.
-# Override these in parent shell before sourcing if needed.
-: "${NUMT_MODULE_SAMTOOLS:=SAMtools/1.21-GCC-13.3.0}"
-: "${NUMT_MODULE_BWA:=BWA/0.7.18-GCCcore-13.3.0}"
-: "${NUMT_MODULE_BEDTOOLS:=BEDTools/2.31.1-GCC-13.3.0}"
-: "${NUMT_MODULE_MINICONDA:=miniconda/24.11.3}"
-: "${NUMT_CONDA_ENV:=blast_env}"
+# Deprecated. NUMT environment is now managed by nextflow.config / nextflow_mcc.config.
+# This file is intentionally a no-op and is kept only for backward-compatible
+# manual invocations that may still source it. Configure module loads and conda
+# activation through params.numt_env_before_script and the numt_related label.
 
-if command -v module >/dev/null 2>&1; then
-  module load "$NUMT_MODULE_SAMTOOLS"
-  module load "$NUMT_MODULE_BWA"
-  module load "$NUMT_MODULE_BEDTOOLS"
-  module load "$NUMT_MODULE_MINICONDA"
-fi
-
-if command -v conda >/dev/null 2>&1; then
-  # shellcheck disable=SC1091
-  conda activate "$NUMT_CONDA_ENV" || true
-fi
+return 0 2>/dev/null || exit 0
