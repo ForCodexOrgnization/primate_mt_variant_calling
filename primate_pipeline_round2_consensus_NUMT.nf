@@ -43,6 +43,11 @@ params.round1_consensus_numt_suffix = params.round1_consensus_numt_suffix ?: '.c
 params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_variant_calling'
 params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.raw.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
+params.mtcn_nuclear_window_size = params.mtcn_nuclear_window_size ?: 100000
+params.mtcn_nuclear_windows_per_contig = params.mtcn_nuclear_windows_per_contig ?: 20
+params.mtcn_nuclear_min_contig_len = params.mtcn_nuclear_min_contig_len ?: 1000000
+params.mtcn_nuclear_edge_buffer = params.mtcn_nuclear_edge_buffer ?: 100000
+params.mtcn_mosdepth_no_per_base = params.mtcn_mosdepth_no_per_base ?: true
 params.round2_chrm_assignment_filter = (params.round2_chrm_assignment_filter ?: 1) as Integer
 if (!(params.round2_chrm_assignment_filter in [1, 2])) {
     error "Invalid --round2_chrm_assignment_filter=${params.round2_chrm_assignment_filter}; choose 1 (filter) or 2 (no filter)"
@@ -1177,7 +1182,7 @@ PY_CHRM_FILTER
 process CALCULATE_ROUND2_MTCN {
     tag { "Calculate round2 mtCN for ${meta.id}" }
     label 'alignment_related'
-    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.round2.mtcn.tsv"
+    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.{round2.mtcn.tsv,round2.nuclear_windows.bed,round2.nuclear.regions.bed.gz,round2.nuclear.mosdepth.summary.txt}"
 
     input:
     tuple val(meta), val(species_name), val(ref_name),
@@ -1195,6 +1200,9 @@ process CALCULATE_ROUND2_MTCN {
 
     output:
     tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.round2.mtcn.tsv"), emit: mtcn
+    path("${meta.id}.round2.nuclear_windows.bed"), emit: nuclear_windows_bed
+    path("${meta.id}.round2.nuclear.regions.bed.gz"), emit: nuclear_regions
+    path("${meta.id}.round2.nuclear.mosdepth.summary.txt"), emit: nuclear_mosdepth_summary
 
     script:
     def mt_contig = params.mt_contig ?: "chrM"
@@ -1230,13 +1238,70 @@ process CALCULATE_ROUND2_MTCN {
     done
     [[ -n "\${found_cram}" ]] || { echo "ERROR: CRAM/CRAI not found for \${SAMPLE_ID} in --cram_dirs or --round1_outdir" >&2; exit 1; }
 
-    awk -v mt="\${MT_CONTIG}" 'BEGIN{OFS="\t"} \$1!=mt {print \$1,0,\$2,"nuclear"}' "\${REF}.fai" > "\${SAMPLE_ID}.round2.nuclear_contigs.bed"
-    [[ -s "\${SAMPLE_ID}.round2.nuclear_contigs.bed" ]] || { echo "ERROR: no nuclear contigs found after excluding \${MT_CONTIG}" >&2; exit 1; }
+    python3 - <<'PY_BED'
+from pathlib import Path
+import math
+
+sample = "${meta.id}"
+ref_fai = Path("${whole_ref}.fai")
+mt = "${mt_contig}"
+
+window = int("${params.mtcn_nuclear_window_size}")
+n_per_contig = int("${params.mtcn_nuclear_windows_per_contig}")
+min_len = int("${params.mtcn_nuclear_min_contig_len}")
+edge = int("${params.mtcn_nuclear_edge_buffer}")
+
+out = Path(f"{sample}.round2.nuclear_windows.bed")
+
+rows = []
+with ref_fai.open() as fh:
+    for line in fh:
+        fields = line.rstrip("\\n").split("\\t")
+        if len(fields) < 2:
+            continue
+        chrom = fields[0]
+        length = int(fields[1])
+        if chrom == mt:
+            continue
+        if length < min_len:
+            continue
+        usable_start = edge
+        usable_end = length - edge
+        if usable_end - usable_start < window:
+            continue
+
+        # Evenly sample windows across this contig.
+        if n_per_contig <= 1:
+            starts = [(usable_start + usable_end - window) // 2]
+        else:
+            max_start = usable_end - window
+            starts = [
+                round(usable_start + i * (max_start - usable_start) / (n_per_contig - 1))
+                for i in range(n_per_contig)
+            ]
+
+        for idx, start in enumerate(starts, start=1):
+            start = max(0, int(start))
+            end = min(length, start + window)
+            if end > start:
+                rows.append((chrom, start, end, f"nuclear_window_{idx}"))
+
+if not rows:
+    raise SystemExit("ERROR: no nuclear sampling windows generated")
+
+with out.open("w") as w:
+    for row in rows:
+        w.write("\\t".join(map(str, row)) + "\\n")
+
+print(f"[INFO] Wrote {len(rows)} nuclear sampling windows to {out}", flush=True)
+PY_BED
+    [[ -s "\${SAMPLE_ID}.round2.nuclear_windows.bed" ]] || { echo "ERROR: no nuclear sampling windows generated" >&2; exit 1; }
 
     "\${MOSDEPTH_BIN}" \
       --threads "\${THREADS}" \
       --fasta "\${REF}" \
-      --by "\${SAMPLE_ID}.round2.nuclear_contigs.bed" \
+      --no-per-base \
+      --by "\${SAMPLE_ID}.round2.nuclear_windows.bed" \
       "\${SAMPLE_ID}.round2.nuclear" \
       "\${found_cram}"
 
@@ -1295,7 +1360,7 @@ mtcn_mean = (2.0 * mt_mean_cov / nuc_mean_cov) if nuc_mean_cov > 0 else math.nan
 mtcn_median = (2.0 * mt_median_cov / nuc_median_cov) if nuc_median_cov > 0 else math.nan
 with out.open("w") as fh:
     fh.write("sample\\tspecies\\tref_name\\tmt_contig\\tmt_coverage_source\\tnuclear_coverage_source\\tmean_mt_coverage\\tmean_nuclear_coverage\\tmean_mtCN\\tmt_mean_coverage\\tnuclear_mean_coverage\\tmtcn_mean\\tmean_formula\\tmt_median_coverage\\tnuclear_median_coverage\\tmtcn_median\\tmedian_formula\\n")
-    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_non_mt_contigs\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\t{mt_median_cov:.6f}\\t{nuc_median_cov:.6f}\\t{mtcn_median:.6f}\\t2*mt_median_coverage/nuclear_median_coverage\\n")
+    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_sampled_nuclear_windows\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\t{mt_median_cov:.6f}\\t{nuc_median_cov:.6f}\\t{mtcn_median:.6f}\\t2*mt_median_coverage/nuclear_median_coverage\\n")
 PY_MTCN
     """
 }
