@@ -51,7 +51,11 @@ if [ -n "${BATCH_FILE:-}" ]; then
     echo "BATCH_FILE mode completed successfully for ${BATCH_FILE}"
     cd "${SUBMIT_DIR}"
     find "$(readlink -f "${OUTPUT_DIR}")" -type d -name "inputs" -exec rm -rf {} +
-    rm -rf "${WORK_DIR}"
+    if [[ "${DEFER_WORK_DIR_CLEANUP:-0}" == "1" ]]; then
+        echo "INFO: DEFER_WORK_DIR_CLEANUP=1; retaining Nextflow work directory for parent cleanup: ${WORK_DIR}"
+    else
+        rm -rf "${WORK_DIR}"
+    fi
     exit 0
 fi
 
