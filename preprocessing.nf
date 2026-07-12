@@ -115,11 +115,12 @@ workflow {
             def meta = [
                 id      : row.sample_id,
                 pair_id : row.run_id,
+                layout  : row.layout,
                 n_pairs : row.expected_pairs.toInteger()
             ]
             // 必须使用 file() 包装路径，Nextflow 才能在进程间正确传递文件
             def r1 = file(row.r1)
-            def r2 = file(row.r2)
+            def r2 = row.layout == 'PE' ? file(row.r2) : file(row.r1)
             tuple(meta, row.species_name, row.ref_name, r1, r2)
         }
 
@@ -221,30 +222,40 @@ process DOWNLOAD_FASTQ {
     fi
 
     # 2. 准备输出清单
-    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tr1\\tr2\\texpected_pairs" > fastq_pairs.tsv
-    valid_count=\$(tail -n +2 report.tsv | wc -l)
+    rm -f fastq_pairs.tmp
+
+    record_failed_download() {
+        local failed_run_id="\$1"
+        local failed_fastq="\$2"
+        local reason="\$3"
+        if [[ ! -f failed_download.tsv ]]; then
+            echo -e "sample_id\trun_id\tfastq_file\treason" > failed_download.tsv
+        fi
+        echo -e "${meta.id}\t\${failed_run_id}\t\${failed_fastq}\t\${reason}" >> failed_download.tsv
+    }
 
     # 3. 循环下载并验证 MD5
     tail -n +2 report.tsv | while IFS=\$'\\t' read -r run_id ftp_urls md5s; do
         IFS=';' read -r -a urls <<< "\$ftp_urls"
         IFS=';' read -r -a mds <<< "\$md5s"
 
-        if [[ \${#urls[@]} -ne 2 ]]; then
-            echo "ERROR: Run \$run_id is not paired-end." >&2; exit 1
-        fi
-        if [[ \${#mds[@]} -ne \${#urls[@]} ]]; then
-            echo "ERROR: Run \$run_id has \${#urls[@]} FASTQ URLs but \${#mds[@]} MD5 values." >&2; exit 1
+        if [[ \${#urls[@]} -eq 2 ]]; then
+            layout="PE"
+            echo "INFO: Run \$run_id detected as paired-end."
+        elif [[ \${#urls[@]} -eq 1 ]]; then
+            layout="SE"
+            echo "INFO: Run \$run_id detected as single-end."
+        else
+            echo "ERROR: Run \$run_id has unsupported number of FASTQ URLs: \${#urls[@]}." >&2
+            record_failed_download "\$run_id" "." "UNSUPPORTED_FASTQ_URL_COUNT_\${#urls[@]}"
+            exit 1
         fi
 
-        record_failed_download() {
-            local failed_run_id="\$1"
-            local failed_fastq="\$2"
-            local reason="\$3"
-            if [[ ! -f failed_download.tsv ]]; then
-                echo -e "sample_id\trun_id\tfastq_file\treason" > failed_download.tsv
-            fi
-            echo -e "${meta.id}\t\${failed_run_id}\t\${failed_fastq}\t\${reason}" >> failed_download.tsv
-        }
+        if [[ \${#mds[@]} -ne \${#urls[@]} ]]; then
+            echo "ERROR: Run \$run_id has \${#urls[@]} FASTQ URLs but \${#mds[@]} MD5 values." >&2
+            record_failed_download "\$run_id" "." "MD5_URL_COUNT_MISMATCH"
+            exit 1
+        fi
 
         download_and_verify_fastq() {
             local url="\$1"
@@ -304,20 +315,42 @@ process DOWNLOAD_FASTQ {
             return 1
         }
 
-        # 下载 R1 和 R2；只有 gzip -t 和 ENA fastq_md5 都通过才写入下游清单
-        for i in 0 1; do
-            url="https://\${urls[\$i]}"
-            target="fastqs/\${run_id}_\$((i+1)).fastq.gz"
+        # 下载 FASTQ；只有 gzip -t 和 ENA fastq_md5 都通过才写入下游清单
+        if [[ "\$layout" == "PE" ]]; then
+            for i in 0 1; do
+                url="https://\${urls[\$i]}"
+                target="fastqs/\${run_id}_\$((i+1)).fastq.gz"
 
-            if ! download_and_verify_fastq "\$url" "\$target" "\${mds[\$i]}" "\$run_id"; then
+                if ! download_and_verify_fastq "\$url" "\$target" "\${mds[\$i]}" "\$run_id"; then
+                    echo "ERROR: Download/validation failed for \$target; failing this sample so Nextflow can retry or ignore it." >&2
+                    exit 1
+                fi
+            done
+
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t\$run_id\\tPE\\t\$PWD/fastqs/\${run_id}_1.fastq.gz\\t\$PWD/fastqs/\${run_id}_2.fastq.gz\\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
+        elif [[ "\$layout" == "SE" ]]; then
+            url="https://\${urls[0]}"
+            target="fastqs/\${run_id}.fastq.gz"
+
+            if ! download_and_verify_fastq "\$url" "\$target" "\${mds[0]}" "\$run_id"; then
                 echo "ERROR: Download/validation failed for \$target; failing this sample so Nextflow can retry or ignore it." >&2
                 exit 1
             fi
-        done
 
-        # 写入清单
-        echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t\$run_id\\t\$PWD/fastqs/\${run_id}_1.fastq.gz\\t\$PWD/fastqs/\${run_id}_2.fastq.gz\\t\$valid_count" >> fastq_pairs.tsv
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t\$run_id\\tSE\\t\$PWD/fastqs/\${run_id}.fastq.gz\\t.\\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
+        fi
     done
+
+    retained_count=\$(wc -l < fastq_pairs.tmp | awk '{print \$1}')
+
+    if [[ "\$retained_count" -eq 0 ]]; then
+        echo "ERROR: No usable FASTQ runs found for \${acc}." >&2
+        exit 1
+    fi
+
+    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tlayout\\tr1\\tr2\\texpected_pairs" > fastq_pairs.tsv
+    awk -v n="\$retained_count" 'BEGIN{FS=OFS="\t"} { \$8=n; print }' fastq_pairs.tmp >> fastq_pairs.tsv
+    rm -f fastq_pairs.tmp
 
     trap - INT TERM HUP QUIT ERR
     """
@@ -341,6 +374,7 @@ process ALIGN_AND_SORT {
     // 将比例从 0.7 降至 0.6，预留更多 buffer 防止系统层面杀进程
     def sort_mem = task.memory ? "${(task.memory.toGiga() * 0.6 / task.cpus).toInteger()}G" : "2G"
     def bam_output = "${meta.id}.${meta.pair_id}.sorted.bam"
+    def bwa_inputs = meta.layout == 'PE' ? "\"${r1}\" \"${r2}\"" : "\"${r1}\""
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
@@ -357,9 +391,31 @@ process ALIGN_AND_SORT {
     rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
     rm -rf "tmp_sort_${meta.pair_id}"
     
+    echo "INFO: FASTQ layout: ${meta.layout}"
     echo "INFO: Validating input FASTQ integrity..."
     # 快速检查 gzip 文件是否损坏，如果是损坏文件则在此处提前终止报错
-    gzip -t "${r1}" "${r2}"
+    if [[ "${meta.layout}" == "PE" ]]; then
+        gzip -t "${r1}" "${r2}"
+    elif [[ "${meta.layout}" == "SE" ]]; then
+        gzip -t "${r1}"
+    else
+        echo "ERROR: Unsupported FASTQ layout: ${meta.layout}" >&2
+        exit 1
+    fi
+
+    for ext in amb ann bwt pac sa; do
+        if [[ ! -s "${ref_file}.\${ext}" ]]; then
+            echo "ERROR: Missing BWA index: ${ref_file}.\${ext}" >&2
+            echo "Please run: bwa index ${ref_file}" >&2
+            exit 1
+        fi
+    done
+
+    if [[ ! -s "${ref_file}.fai" ]]; then
+        echo "ERROR: Missing samtools faidx: ${ref_file}.fai" >&2
+        echo "Please run: samtools faidx ${ref_file}" >&2
+        exit 1
+    fi
 
     # 创建独立的临时目录，避免多任务并发时可能产生的文件冲突
     # 使用当前工作目录下的 tmp，确保存储空间足够（通常比 /tmp 大）
@@ -372,7 +428,7 @@ process ALIGN_AND_SORT {
     # ===== 执行核心管道 =====
     bwa mem -K 100000000 -v 3 -t ${task.cpus} -M -Y \\
       -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
-      "${ref_file}" "${r1}" "${r2}" | \\
+      "${ref_file}" ${bwa_inputs} | \\
     samtools sort -@ ${task.cpus} -m ${sort_mem} \\
       -T "\${TMP_DIR}/sort_prefix" \\
       -o "${bam_output}" -
