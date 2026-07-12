@@ -3,7 +3,52 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-source "${SCRIPT_DIR}/load_numt_modules.sh"
+
+check_numt_environment() {
+  echo "INFO: Checking NUMT runtime environment..." >&2
+
+  command -v samtools >/dev/null 2>&1 || {
+    echo "ERROR: samtools not found in PATH. Please configure NUMT environment in nextflow.config / nextflow_mcc.config." >&2
+    exit 1
+  }
+
+  command -v bwa >/dev/null 2>&1 || {
+    echo "ERROR: bwa not found in PATH. Please configure NUMT environment in nextflow.config / nextflow_mcc.config." >&2
+    exit 1
+  }
+
+  command -v bedtools >/dev/null 2>&1 || {
+    echo "ERROR: bedtools not found in PATH. Please configure NUMT environment in nextflow.config / nextflow_mcc.config." >&2
+    exit 1
+  }
+
+  command -v blastn >/dev/null 2>&1 || {
+    echo "ERROR: blastn not found in PATH. Please activate blast_env or configure BLAST in nextflow.config / nextflow_mcc.config." >&2
+    exit 1
+  }
+
+  command -v makeblastdb >/dev/null 2>&1 || {
+    echo "ERROR: makeblastdb not found in PATH. Please activate blast_env or configure BLAST in nextflow.config / nextflow_mcc.config." >&2
+    exit 1
+  }
+
+  command -v python >/dev/null 2>&1 || {
+    echo "ERROR: python not found in PATH. Please activate blast_env or configure Python in nextflow.config / nextflow_mcc.config." >&2
+    exit 1
+  }
+
+  python -c "import pysam" >/dev/null 2>&1 || {
+    echo "ERROR: Python cannot import pysam. Please install pysam in blast_env or the configured NUMT conda environment." >&2
+    exit 1
+  }
+
+  echo "INFO: NUMT runtime environment detected:" >&2
+  samtools --version | head -n 1 >&2 || true
+  bwa 2>&1 | head -n 1 >&2 || true
+  bedtools --version >&2 || true
+  blastn -version | head -n 1 >&2 || true
+  python -c "import pysam; print('pysam', pysam.__version__)" >&2 || true
+}
 
 ########################################
 # Usage
@@ -152,6 +197,8 @@ fi
 [[ -n "$OUTDIR" ]] || { echo "ERROR: --outdir required" >&2; exit 1; }
 [[ -s "$INPUT" ]] || { echo "ERROR: input file not found or empty: $INPUT" >&2; exit 1; }
 [[ -s "$INDEX" ]] || { echo "ERROR: index file not found or empty: $INDEX" >&2; exit 1; }
+
+check_numt_environment
 
 mkdir -p "$OUTDIR"/log_numt
 

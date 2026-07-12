@@ -166,10 +166,11 @@ CONFIG
     log "Starting NUMT discovery for ${SAMPLE_ID} with config ${NUMT_CONFIG}"
     log "Generated NUMT config for ${SAMPLE_ID}:"
     sed 's/^/  /' "${NUMT_CONFIG}" >&2
-    (
-        cd "${NUMT_DIR}"
-        bash run_numt_end2end.sh --config "${NUMT_CONFIG}"
-    )
+    nextflow run "${NUMT_DIR}/numt_end2end.nf" \
+        -c "${NF_CONFIG_FILE}" \
+        -profile cluster \
+        -work-dir "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
+        --numt_config "${NUMT_CONFIG}"
 fi
 
 # Empty high-confidence NUMT BED files are valid for samples with no calls.

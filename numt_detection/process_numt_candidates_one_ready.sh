@@ -2,7 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 # ============================================================
 # Ready-to-use defaults for your Yale HPC layout

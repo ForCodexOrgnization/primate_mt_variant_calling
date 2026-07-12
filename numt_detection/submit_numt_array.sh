@@ -31,7 +31,6 @@ cd "${WORKDIR}"
 mkdir -p log_numt
 mkdir -p "${RESULTS_ROOT}"
 
-source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 echo "Job ID     : ${SLURM_JOB_ID}"
 echo "Array task : ${SLURM_ARRAY_TASK_ID}"

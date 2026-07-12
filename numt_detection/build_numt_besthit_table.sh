@@ -63,7 +63,6 @@ TMP_BODY="${OUT_PREFIX}.numt_vs_chrM.besthit.body.tsv"
 
 
 
-source "${SCRIPT_DIR}/load_numt_modules.sh"
 
 
 ########################################

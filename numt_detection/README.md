@@ -58,25 +58,23 @@ For each sample, CRAM is searched in `CRAM_ROOT_1` first, then `CRAM_ROOT_2`.
 
 ## Environment / module load
 
-Modules and environment are centralized in `load_numt_modules.sh`, which is sourced by:
-- `run_numt_discovery.sh`
-- `process_numt_candidates_one_ready.sh`
-- `submit_numt_end2end_array.sh`
+NUMT runtime environment setup is managed by the repository Nextflow configs,
+not by `load_numt_modules.sh`. The deprecated `load_numt_modules.sh` file is
+kept as a no-op for backward compatibility only.
 
-Default modules/env loaded:
-- `SAMtools/1.21-GCC-13.3.0`
-- `BWA/0.7.18-GCCcore-13.3.0`
-- `BEDTools/2.31.1-GCC-13.3.0`
-- `miniconda/24.11.3`
-- conda env: `blast_env`
+For Nextflow-driven NUMT execution, processes labeled `numt_related` use
+`params.numt_env_before_script` from `nextflow.config` or `nextflow_mcc.config`
+to load SAMtools, BWA, BEDTools, BLAST, Python, and `pysam` via the configured
+conda environment. Override `params.numt_env_before_script` in the site-specific
+Nextflow config when module names differ.
 
-You can override before running, e.g.:
-```bash
-export NUMT_MODULE_SAMTOOLS="SAMtools/1.22-GCC-14.2.0"
-export NUMT_CONDA_ENV="blast_env"
-```
+`run_numt_discovery.sh` validates the runtime environment before running and
+reports a clear error if any required tool is missing:
 
-
-### Slurm 报错：`load_numt_modules.sh: No such file or directory`
-这是因为 Slurm 在 `/var/spool/slurmd/...` 执行脚本时，当前目录不是仓库目录。
-现在脚本会优先使用 `SLURM_SUBMIT_DIR` 定位仓库并加载 `load_numt_modules.sh`。
+- `samtools`
+- `bwa`
+- `bedtools`
+- `blastn`
+- `makeblastdb`
+- `python`
+- `python -c "import pysam"`
