@@ -114,12 +114,13 @@ ROUND2_WORK_DIR="${SAMPLE_WORK_ROOT}/round2"
 # Run each Nextflow invocation from a sample/stage-specific launch directory so
 # parallel array tasks do not contend for the repository-level .nextflow cache lock.
 PRE_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/pre"
+NUMT_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/numt"
 ROUND1_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round1"
 ROUND2_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round2"
 NUMT_CONFIG="${SAMPLE_WORK_ROOT}/${SAMPLE_ID}.numt.config"
 
 mkdir -p "${SAMPLE_TSV_DIR}" "${PRE_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}" \
-    "${PRE_LAUNCH_DIR}" "${ROUND1_LAUNCH_DIR}" "${ROUND2_LAUNCH_DIR}" \
+    "${PRE_LAUNCH_DIR}" "${NUMT_LAUNCH_DIR}" "${ROUND1_LAUNCH_DIR}" "${ROUND2_LAUNCH_DIR}" \
     "${NUMT_DISCOVERY_OUTROOT}" "${NUMT_BESTHIT_OUTDIR}"
 printf '%s\n' "${SAMPLE_LINE}" > "${SAMPLE_TSV}"
 
@@ -176,13 +177,17 @@ CONFIG
     grep -q '^DISCOVERY_OUTDIR=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing DISCOVERY_OUTDIR=: ${NUMT_CONFIG}"
     grep -q '^BESTHIT_OUTDIR=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing BESTHIT_OUTDIR=: ${NUMT_CONFIG}"
     log "Starting NUMT discovery for ${SAMPLE_ID} with config ${NUMT_CONFIG}"
+    log "NUMT launch directory for ${SAMPLE_ID}: ${NUMT_LAUNCH_DIR}"
     log "Generated NUMT config for ${SAMPLE_ID}:"
     sed 's/^/  /' "${NUMT_CONFIG}" >&2
-    nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_DIR}/numt_end2end.nf" \
-        -profile cluster \
-        -resume \
-        -w "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
-        --numt_config "${NUMT_CONFIG}"
+    (
+        cd "${NUMT_LAUNCH_DIR}"
+        nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_DIR}/numt_end2end.nf" \
+            -profile cluster \
+            -resume \
+            -w "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
+            --numt_config "${NUMT_CONFIG}"
+    )
 fi
 
 # Empty high-confidence NUMT BED files are valid for samples with no calls.
