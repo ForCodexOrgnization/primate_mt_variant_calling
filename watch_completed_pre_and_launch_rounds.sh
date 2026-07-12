@@ -40,7 +40,9 @@ RUN_ONCE="${RUN_ONCE:-0}"
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/home/lt692/ycga_work/nf_work_dir_streaming_per_sample}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-1}"
-NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow_mcc.config}"
+
+NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)"
 
 mkdir -p "${STATE_DIR}" "${INPUT_DIR}" "${LOG_DIR}"
 touch "${SUBMITTED_FILE}"
@@ -118,6 +120,9 @@ submit_downstream_for_sample() {
 
     log "Submitting downstream pipeline for ${sample_id}"
     log "One-sample TSV: ${sample_tsv}"
+    log "REPO_DIR=${REPO_DIR}"
+    log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
+    log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
 
     # launch_pipeline_streaming_per_sample.sh expects FULL_SAMPLE_LIST and submits/uses
     # a one-sample array. MAX_CONCURRENT=1 is safest for one-sample TSV.
