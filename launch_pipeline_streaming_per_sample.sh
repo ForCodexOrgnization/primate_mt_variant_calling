@@ -38,7 +38,7 @@ NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_streaming_per_sample}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-10}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-0}"
-NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow_mcc.config}"
 LOG_DIR="${LOG_DIR:-log_streaming}"
 
 log() {
@@ -69,6 +69,13 @@ else
 fi
 cd "${REPO_DIR}"
 
+NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)"
+[[ -s "${NF_CONFIG_PATH}" ]] || fail "NF_CONFIG_FILE does not exist or is empty: ${NF_CONFIG_PATH}"
+
+log "REPO_DIR=${REPO_DIR}"
+log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
+log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
+
 [[ -f "${FULL_SAMPLE_LIST}" ]] || fail "FULL_SAMPLE_LIST does not exist: ${FULL_SAMPLE_LIST}"
 mkdir -p "${LOG_DIR}" "${NF_BASE_WORK_DIR}"
 
@@ -77,6 +84,9 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     [[ "${NUM_SAMPLES}" -gt 0 ]] || fail "No sample lines found in ${FULL_SAMPLE_LIST}"
 
     log "Submitting per-sample streaming array for ${NUM_SAMPLES} samples with concurrency ${MAX_CONCURRENT}"
+    log "REPO_DIR=${REPO_DIR}"
+    log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
+    log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
     sbatch --export=ALL --array=1-"${NUM_SAMPLES}"%"${MAX_CONCURRENT}" "$0"
     log "Job array submitted. Monitor with: squeue -u \$USER"
     exit 0
@@ -85,6 +95,9 @@ fi
 module load Nextflow/24.10.2
 
 log "Running per-sample streaming worker for 1-based task ${SLURM_ARRAY_TASK_ID}"
+log "REPO_DIR=${REPO_DIR}"
+log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
+log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
 SAMPLE_LINE="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "${FULL_SAMPLE_LIST}")"
 [[ -n "${SAMPLE_LINE}" ]] || fail "No sample line found for SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}"
 
@@ -123,7 +136,7 @@ else
     (
         cd "${PRE_LAUNCH_DIR}"
         nextflow run "${REPO_DIR}/preprocessing.nf" \
-            -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)" \
+            -c "${NF_CONFIG_PATH}" \
             -profile cluster \
             -resume \
             -w "${PRE_WORK_DIR}" \
@@ -167,9 +180,10 @@ CONFIG
     log "Generated NUMT config for ${SAMPLE_ID}:"
     sed 's/^/  /' "${NUMT_CONFIG}" >&2
     nextflow run "${NUMT_DIR}/numt_end2end.nf" \
-        -c "${NF_CONFIG_FILE}" \
+        -c "${NF_CONFIG_PATH}" \
         -profile cluster \
-        -work-dir "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
+        -resume \
+        -w "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
         --numt_config "${NUMT_CONFIG}"
 fi
 
@@ -181,7 +195,7 @@ log "Starting round 1 for ${SAMPLE_ID}"
 (
     cd "${ROUND1_LAUNCH_DIR}"
     nextflow run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
-        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)" \
+        -c "${NF_CONFIG_PATH}" \
         -profile cluster \
         -resume \
         -w "${ROUND1_WORK_DIR}" \
@@ -208,7 +222,7 @@ log "Starting round 2 for ${SAMPLE_ID}"
 (
     cd "${ROUND2_LAUNCH_DIR}"
     nextflow run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
-        -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)" \
+        -c "${NF_CONFIG_PATH}" \
         -profile cluster \
         -resume \
         -w "${ROUND2_WORK_DIR}" \

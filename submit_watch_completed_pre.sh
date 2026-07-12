@@ -19,4 +19,5 @@ NF_BASE_WORK_DIR="/home/lt692/ycga_work/nf_work_dir_streaming_per_sample" \
 CLEAN_ON_SUCCESS=1 \
 MAX_CONCURRENT=1 \
 WATCH_INTERVAL_SECONDS=300 \
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow_mcc.config}" \
 bash /home/lt692/project_pi_njl27/lt692/primate_mt_variant_calling/watch_completed_pre_and_launch_rounds.sh
