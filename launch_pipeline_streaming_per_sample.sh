@@ -3,6 +3,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
+#SBATCH --partition=ycga
 #SBATCH --output=log_streaming/nf_streaming_%A_%a.log
 
 set -euo pipefail
@@ -24,20 +25,20 @@ set -euo pipefail
 # all stages and validations pass. Work directories are always retained on failure.
 # ===============================================================================
 
-FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primate_mt_variant_calling/human_sample.txt}"
-PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results_test}"
-ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results_test}"
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/ycga_work/primate_mt_variant_calling/mcc_sample_list.txt}"
+PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_results}"
+ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_results}"
 ROUND1_OUTDIR="${ROUND1_OUTDIR:-${ROUND_OUTPUT_DIR}}"
 
 NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR}/numt_discovery}"
 NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
-GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
-REF_DIR="${REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
-NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/nuclear_only_refs}"
+GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/variant_calling_ref/Ref_whole}"
+REF_DIR="${REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/variant_calling_ref/Ref_chrM}"
+NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/variant_calling_ref/nuclear_only_refs}"
 
-NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_streaming_per_sample}"
+NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/home/lt692/ycga_work/nf_work_dir_all_per_batch/nf_work_dir_streaming_per_sample}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-10}"
-CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-0}"
+CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow_mcc.config}"
 LOG_DIR="${LOG_DIR:-log_streaming}"
 
@@ -92,7 +93,7 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     exit 0
 fi
 
-module load Nextflow/24.10.2
+module load Nextflow/24.04.4
 
 log "Running per-sample streaming worker for 1-based task ${SLURM_ARRAY_TASK_ID}"
 log "REPO_DIR=${REPO_DIR}"
