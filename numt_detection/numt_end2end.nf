@@ -52,14 +52,20 @@ process RUN_NUMT_END2END {
 
       while (( attempt <= max_attempts )); do
         echo "[\$(date)] NUMT end-to-end attempt \${attempt}/\${max_attempts} for \${sample}"
-        if bash ${projectDir}/run_numt_end2end.sh --config "\${cfg}"; then
-          status=0
-          break
+
+        set +e
+        bash ${projectDir}/run_numt_end2end.sh --config "\${cfg}"
+        status=\$?
+        set -e
+
+        if [[ "\${status}" -eq 0 ]]; then
+          return 0
         fi
 
-        status=\$?
+        echo "[\$(date)] NUMT attempt \${attempt} failed with exit code \${status} for \${sample}" >&2
+
         if [[ "\${status}" -eq 1 && "\${attempt}" -lt "\${max_attempts}" ]]; then
-          echo "[\$(date)] NUMT attempt \${attempt} failed with exit code 1; retrying \${sample} once for possible transient filesystem failure." >&2
+          echo "[\$(date)] Retrying \${sample} once for possible transient filesystem failure." >&2
           rm -f "\${discovery_dir}/\${sample}.numt_discovery.done"
           rm -rf "\${discovery_dir}/intermediate" "\${discovery_dir}/tmp"
           attempt=\$((attempt + 1))
@@ -67,7 +73,7 @@ process RUN_NUMT_END2END {
           continue
         fi
 
-        break
+        return "\${status}"
       done
 
       return "\${status}"
@@ -178,14 +184,15 @@ BESTHIT_OUTDIR=\${BESTHIT_OUTDIR}
 CFG
 
     if run_with_retry "\${TMP_CFG}" "\${SAMPLE_ID}" "\${SAMPLE_DISCOVERY_OUTDIR}"; then
-      status=0
+      rm -f "\${TMP_CFG}"
+      require_highconf_output
+      touch ${sample_id}.numt_end2end.done
+      exit 0
     else
       status=\$?
+      rm -f "\${TMP_CFG}"
+      exit "\${status}"
     fi
-    rm -f "\${TMP_CFG}"
-    [[ "\${status}" -eq 0 ]] || exit "\${status}"
-    require_highconf_output
-    touch ${sample_id}.numt_end2end.done
     """
 }
 
