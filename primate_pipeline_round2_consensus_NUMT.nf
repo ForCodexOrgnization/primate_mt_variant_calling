@@ -43,10 +43,11 @@ params.round1_consensus_numt_suffix = params.round1_consensus_numt_suffix ?: '.c
 params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_variant_calling'
 params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.raw.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
-params.mtcn_nuclear_window_size = params.mtcn_nuclear_window_size ?: 100000
-params.mtcn_nuclear_windows_per_contig = params.mtcn_nuclear_windows_per_contig ?: 20
-params.mtcn_nuclear_min_contig_len = params.mtcn_nuclear_min_contig_len ?: 1000000
-params.mtcn_nuclear_edge_buffer = params.mtcn_nuclear_edge_buffer ?: 100000
+params.mtcn_nuclear_window_size = params.mtcn_nuclear_window_size ?: 20000
+params.mtcn_nuclear_windows_per_contig = params.mtcn_nuclear_windows_per_contig ?: 3
+params.mtcn_nuclear_min_contig_len = params.mtcn_nuclear_min_contig_len ?: 50000
+params.mtcn_nuclear_edge_buffer = params.mtcn_nuclear_edge_buffer ?: 5000
+params.mtcn_nuclear_max_contigs = params.mtcn_nuclear_max_contigs ?: 500
 params.mtcn_mosdepth_no_per_base = params.mtcn_mosdepth_no_per_base ?: true
 params.round2_chrm_assignment_filter = (params.round2_chrm_assignment_filter ?: 1) as Integer
 if (!(params.round2_chrm_assignment_filter in [1, 2])) {
@@ -1249,11 +1250,12 @@ mt = "${mt_contig}"
 window = int("${params.mtcn_nuclear_window_size}")
 n_per_contig = int("${params.mtcn_nuclear_windows_per_contig}")
 min_len = int("${params.mtcn_nuclear_min_contig_len}")
-edge = int("${params.mtcn_nuclear_edge_buffer}")
+configured_edge = int("${params.mtcn_nuclear_edge_buffer}")
+max_contigs = int("${params.mtcn_nuclear_max_contigs}")
 
 out = Path(f"{sample}.round2.nuclear_windows.bed")
 
-rows = []
+all_non_mt_contigs = []
 with ref_fai.open() as fh:
     for line in fh:
         fields = line.rstrip("\\n").split("\\t")
@@ -1263,28 +1265,59 @@ with ref_fai.open() as fh:
         length = int(fields[1])
         if chrom == mt:
             continue
-        if length < min_len:
-            continue
+        all_non_mt_contigs.append((chrom, length))
+
+eligible_contigs = [row for row in all_non_mt_contigs if row[1] >= min_len]
+selected_contigs = sorted(eligible_contigs, key=lambda row: row[1], reverse=True)[:max_contigs]
+
+def build_even_windows(contigs, configured_window, windows_per_contig, edge_fn, name_prefix):
+    rows = []
+    for chrom, length in contigs:
+        edge = edge_fn(length)
         usable_start = edge
         usable_end = length - edge
-        if usable_end - usable_start < window:
+        usable_len = usable_end - usable_start
+        if usable_len <= 0:
+            continue
+        local_window = min(configured_window, usable_len)
+        if local_window <= 0:
             continue
 
-        # Evenly sample windows across this contig.
-        if n_per_contig <= 1:
-            starts = [(usable_start + usable_end - window) // 2]
+        if windows_per_contig <= 1:
+            starts = [(usable_start + usable_end - local_window) // 2]
         else:
-            max_start = usable_end - window
+            max_start = usable_end - local_window
             starts = [
-                round(usable_start + i * (max_start - usable_start) / (n_per_contig - 1))
-                for i in range(n_per_contig)
+                round(usable_start + i * (max_start - usable_start) / (windows_per_contig - 1))
+                for i in range(windows_per_contig)
             ]
 
         for idx, start in enumerate(starts, start=1):
-            start = max(0, int(start))
-            end = min(length, start + window)
+            start = max(0, min(int(start), length))
+            end = min(length, start + local_window)
             if end > start:
-                rows.append((chrom, start, end, f"nuclear_window_{idx}"))
+                rows.append((chrom, start, end, f"{name_prefix}_{idx}"))
+    return rows
+
+rows = build_even_windows(
+    selected_contigs,
+    window,
+    n_per_contig,
+    lambda length: min(configured_edge, length // 10),
+    "nuclear_window",
+)
+
+if not rows:
+    fallback_contigs = sorted(all_non_mt_contigs, key=lambda row: row[1], reverse=True)[:100]
+    rows = build_even_windows(
+        fallback_contigs,
+        10000,
+        1,
+        lambda length: min(1000, length // 20),
+        "nuclear_fallback_window",
+    )
+    selected_contigs = fallback_contigs
+    print("[WARN] Primary nuclear window selection generated no windows; used centered fallback windows", flush=True)
 
 if not rows:
     raise SystemExit("ERROR: no nuclear sampling windows generated")
@@ -1293,6 +1326,17 @@ with out.open("w") as w:
     for row in rows:
         w.write("\\t".join(map(str, row)) + "\\n")
 
+total_sampled_bp = sum(end - start for _, start, end, _ in rows)
+selected_lengths = [length for _, length in selected_contigs]
+min_selected_len = min(selected_lengths) if selected_lengths else 0
+max_selected_len = max(selected_lengths) if selected_lengths else 0
+print(f"[INFO] Nuclear window diagnostics for {sample}", flush=True)
+print(f"[INFO] total non-mt contigs: {len(all_non_mt_contigs)}", flush=True)
+print(f"[INFO] eligible contigs: {len(eligible_contigs)}", flush=True)
+print(f"[INFO] selected contigs: {len(selected_contigs)}", flush=True)
+print(f"[INFO] generated windows: {len(rows)}", flush=True)
+print(f"[INFO] total sampled bp: {total_sampled_bp}", flush=True)
+print(f"[INFO] min/max selected contig length: {min_selected_len}/{max_selected_len}", flush=True)
 print(f"[INFO] Wrote {len(rows)} nuclear sampling windows to {out}", flush=True)
 PY_BED
     [[ -s "\${SAMPLE_ID}.round2.nuclear_windows.bed" ]] || { echo "ERROR: no nuclear sampling windows generated" >&2; exit 1; }
