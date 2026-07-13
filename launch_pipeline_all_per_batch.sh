@@ -16,10 +16,10 @@ set -euo pipefail
 #     bash launch_pipeline_all_per_batch.sh
 # ==============================================================================
 
-FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primate_mt_variant_calling/human_sample.txt}"
-PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results_test_July}"
-ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results_test_July}"
-NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/pi/pi_njl27/lt692/nf_work_dir_all_per_batch}"
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primate_mt_variant_calling/bouchet_sample_list.txt}"
+PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/nfs/roberts/pi/pi_njl27/lt692/primate_results}"
+ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/nfs/roberts/pi/pi_njl27/lt692/primate_results}"
+NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/home/lt692/scratch_pi_njl27/lt692/nf_work_dir_all_per_batch}"
 PRE_NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR:-${NF_BASE_WORK_DIR}/pre}"
 ROUND1_NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR:-${NF_BASE_WORK_DIR}/round1}"
 ROUND2_NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR:-${NF_BASE_WORK_DIR}/round2}"
@@ -36,13 +36,13 @@ REF_DIR="${REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/re
 GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
 NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/nuclear_only_refs}"
 BATCH_SIZE="${BATCH_SIZE:-10}"
-CHAIN_CONCURRENT_BATCHES="${CHAIN_CONCURRENT_BATCHES:-3}"
+CHAIN_CONCURRENT_BATCHES="${CHAIN_CONCURRENT_BATCHES:-2}"
 NUMT_CONCURRENT="${NUMT_CONCURRENT:-${CONCURRENT:-${CHAIN_CONCURRENT_BATCHES}}}"
 POLL_SECONDS="${POLL_SECONDS:-120}"
 LOG_DIR="${LOG_DIR:-log_all_per_batch}"
 BATCH_LIST_DIR="${BATCH_LIST_DIR:-${NF_BASE_WORK_DIR}/batch_lists}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
-CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-0}"
+CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
     repo_dir="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
