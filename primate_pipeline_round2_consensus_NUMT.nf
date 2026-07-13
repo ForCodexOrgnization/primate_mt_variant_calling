@@ -1247,11 +1247,11 @@ sample = "${meta.id}"
 ref_fai = Path("${whole_ref}.fai")
 mt = "${mt_contig}"
 
-window = int("${params.mtcn_nuclear_window_size}")
-n_per_contig = int("${params.mtcn_nuclear_windows_per_contig}")
-min_len = int("${params.mtcn_nuclear_min_contig_len}")
-configured_edge = int("${params.mtcn_nuclear_edge_buffer}")
-max_contigs = int("${params.mtcn_nuclear_max_contigs}")
+window_cfg = int("${params.mtcn_nuclear_window_size}")
+windows_per_contig_cfg = int("${params.mtcn_nuclear_windows_per_contig}")
+min_len_cfg = int("${params.mtcn_nuclear_min_contig_len}")
+edge_cfg = int("${params.mtcn_nuclear_edge_buffer}")
+max_contigs_cfg = int("${params.mtcn_nuclear_max_contigs}")
 
 out = Path(f"{sample}.round2.nuclear_windows.bed")
 
@@ -1267,8 +1267,8 @@ with ref_fai.open() as fh:
             continue
         all_non_mt_contigs.append((chrom, length))
 
-eligible_contigs = [row for row in all_non_mt_contigs if row[1] >= min_len]
-selected_contigs = sorted(eligible_contigs, key=lambda row: row[1], reverse=True)[:max_contigs]
+eligible_contigs = [row for row in all_non_mt_contigs if row[1] >= min_len_cfg]
+selected_contigs = sorted(eligible_contigs, key=lambda row: row[1], reverse=True)[:max_contigs_cfg]
 
 def build_even_windows(contigs, configured_window, windows_per_contig, edge_fn, name_prefix):
     rows = []
@@ -1301,13 +1301,15 @@ def build_even_windows(contigs, configured_window, windows_per_contig, edge_fn, 
 
 rows = build_even_windows(
     selected_contigs,
-    window,
-    n_per_contig,
-    lambda length: min(configured_edge, length // 10),
+    window_cfg,
+    windows_per_contig_cfg,
+    lambda length: min(edge_cfg, length // 10),
     "nuclear_window",
 )
 
+fallback_used = False
 if not rows:
+    fallback_used = True
     fallback_contigs = sorted(all_non_mt_contigs, key=lambda row: row[1], reverse=True)[:100]
     rows = build_even_windows(
         fallback_contigs,
@@ -1331,12 +1333,14 @@ selected_lengths = [length for _, length in selected_contigs]
 min_selected_len = min(selected_lengths) if selected_lengths else 0
 max_selected_len = max(selected_lengths) if selected_lengths else 0
 print(f"[INFO] Nuclear window diagnostics for {sample}", flush=True)
-print(f"[INFO] total non-mt contigs: {len(all_non_mt_contigs)}", flush=True)
-print(f"[INFO] eligible contigs: {len(eligible_contigs)}", flush=True)
-print(f"[INFO] selected contigs: {len(selected_contigs)}", flush=True)
-print(f"[INFO] generated windows: {len(rows)}", flush=True)
-print(f"[INFO] total sampled bp: {total_sampled_bp}", flush=True)
-print(f"[INFO] min/max selected contig length: {min_selected_len}/{max_selected_len}", flush=True)
+print(f"[INFO] total_non_mt_contigs={len(all_non_mt_contigs)}", flush=True)
+print(f"[INFO] eligible_contigs_ge_min_len={len(eligible_contigs)}", flush=True)
+print(f"[INFO] selected_contigs={len(selected_contigs)}", flush=True)
+print(f"[INFO] generated_windows={len(rows)}", flush=True)
+print(f"[INFO] total_sampled_bp={total_sampled_bp}", flush=True)
+print(f"[INFO] fallback_used={fallback_used}", flush=True)
+print(f"[INFO] selected_contig_len_min={min_selected_len}", flush=True)
+print(f"[INFO] selected_contig_len_max={max_selected_len}", flush=True)
 print(f"[INFO] Wrote {len(rows)} nuclear sampling windows to {out}", flush=True)
 PY_BED
     [[ -s "\${SAMPLE_ID}.round2.nuclear_windows.bed" ]] || { echo "ERROR: no nuclear sampling windows generated" >&2; exit 1; }
