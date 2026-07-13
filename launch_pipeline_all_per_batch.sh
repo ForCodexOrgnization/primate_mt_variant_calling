@@ -210,7 +210,7 @@ validate_pre_to_round1() {
         [[ -s "${cram}" ]] || { echo "MISSING/EMPTY: ${cram}" >&2; missing=1; }
         [[ -s "${crai}" ]] || { echo "MISSING/EMPTY: ${crai}" >&2; missing=1; }
     done < <(read_sample_ids "${batch_file}")
-    [[ "${missing}" -eq 0 ]] || fail "Preprocessing outputs are incomplete for ${batch_file}"
+    [[ "${missing}" -eq 0 ]]
 }
 
 validate_numt_to_round1() {
@@ -220,7 +220,7 @@ validate_numt_to_round1() {
         bed="${NUMT_BESTHIT_OUTDIR}/${sample}.highconf_numt.bed"
         [[ -e "${bed}" ]] || { echo "MISSING: ${bed}" >&2; missing=1; }
     done < <(read_sample_ids "${batch_file}")
-    [[ "${missing}" -eq 0 ]] || fail "NUMT outputs are incomplete for ${batch_file}"
+    [[ "${missing}" -eq 0 ]]
 }
 
 validate_round1_to_round2() {
@@ -238,7 +238,7 @@ validate_round1_to_round2() {
         [[ -s "${numt_vcf}" ]] || { echo "MISSING/EMPTY: ${numt_vcf}" >&2; missing=1; }
         [[ -s "${numt_vcf}.tbi" ]] || { echo "MISSING/EMPTY: ${numt_vcf}.tbi" >&2; missing=1; }
     done < <(read_sample_ids "${batch_file}")
-    [[ "${missing}" -eq 0 ]] || fail "Round 1 outputs are incomplete for ${batch_file}"
+    [[ "${missing}" -eq 0 ]]
 }
 
 validate_round2_final() {
@@ -249,7 +249,7 @@ validate_round2_final() {
         [[ -d "${out_dir}" ]] || { echo "MISSING DIR: ${out_dir}" >&2; missing=1; continue; }
         find "${out_dir}" -type f -name "${sample}.round2.original_coords.clean.final.split.vcf.gz" -size +0c -print -quit 2>/dev/null | grep -q . || { echo "MISSING/EMPTY round2 final VCF under: ${out_dir}" >&2; missing=1; }
     done < <(read_sample_ids "${batch_file}")
-    [[ "${missing}" -eq 0 ]] || fail "Round 2 outputs are incomplete for ${batch_file}"
+    [[ "${missing}" -eq 0 ]]
 }
 
 run_chain() {
@@ -261,28 +261,46 @@ run_chain() {
 
     log "Starting per-batch chain ${batch_id}: ${batch_file}"
     env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${PRE_LAUNCH_SCRIPT}"
-    validate_pre_to_round1 "${batch_file}"
+    validate_pre_to_round1 "${batch_file}" || fail "Preprocessing outputs are incomplete for ${batch_file}"
     cleanup_work_dir_if_requested "pre_${batch_name}" "${pre_batch_work_dir}"
-    run_numt_nextflow "${batch_file}" "${batch_id}"
-    cleanup_work_dir_if_requested "numt_${batch_name}" "${NUMT_NF_BASE_WORK_DIR}/${batch_name}"
-    validate_numt_to_round1 "${batch_file}"
-    log "Launching round1 for ${batch_id}"
-    log "  BATCH_FILE=${batch_file}"
-    log "  OUTPUT_DIR=${ROUND1_OUTDIR}"
-    log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
-    log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
-    log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
-    env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND1_LAUNCH_SCRIPT}"
-    validate_round1_to_round2 "${batch_file}"
-    cleanup_work_dir_if_requested "round1_${batch_name}" "${round1_batch_work_dir}"
-    log "Launching round2 for ${batch_id}"
-    log "  BATCH_FILE=${batch_file}"
-    log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
-    log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
-    log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
-    env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND2_LAUNCH_SCRIPT}"
-    validate_round2_final "${batch_file}"
-    cleanup_work_dir_if_requested "round2_${batch_name}" "${round2_batch_work_dir}"
+
+    if validate_numt_to_round1 "${batch_file}"; then
+        log "Skipping NUMT for ${batch_id}; expected NUMT outputs already exist."
+    else
+        log "NUMT outputs incomplete for ${batch_id}; launching NUMT step."
+        run_numt_nextflow "${batch_file}" "${batch_id}"
+        validate_numt_to_round1 "${batch_file}" || fail "NUMT outputs are incomplete for ${batch_file}"
+        cleanup_work_dir_if_requested "numt_${batch_name}" "${NUMT_NF_BASE_WORK_DIR}/${batch_name}"
+    fi
+
+    if validate_round1_to_round2 "${batch_file}"; then
+        log "Skipping round1 for ${batch_id}; expected round1 outputs already exist."
+    else
+        log "Round1 outputs incomplete for ${batch_id}; launching round1 step."
+        log "Launching round1 for ${batch_id}"
+        log "  BATCH_FILE=${batch_file}"
+        log "  OUTPUT_DIR=${ROUND1_OUTDIR}"
+        log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
+        log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
+        log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
+        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND1_LAUNCH_SCRIPT}"
+        validate_round1_to_round2 "${batch_file}" || fail "Round 1 outputs are incomplete for ${batch_file}"
+        cleanup_work_dir_if_requested "round1_${batch_name}" "${round1_batch_work_dir}"
+    fi
+
+    if validate_round2_final "${batch_file}"; then
+        log "Skipping round2 for ${batch_id}; expected round2 outputs already exist."
+    else
+        log "Round2 outputs incomplete for ${batch_id}; launching round2 step."
+        log "Launching round2 for ${batch_id}"
+        log "  BATCH_FILE=${batch_file}"
+        log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
+        log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
+        log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
+        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND2_LAUNCH_SCRIPT}"
+        validate_round2_final "${batch_file}" || fail "Round 2 outputs are incomplete for ${batch_file}"
+        cleanup_work_dir_if_requested "round2_${batch_name}" "${round2_batch_work_dir}"
+    fi
     log "Completed per-batch chain ${batch_id}"
 }
 
