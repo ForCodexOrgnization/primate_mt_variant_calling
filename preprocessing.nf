@@ -177,6 +177,9 @@ process DOWNLOAD_FASTQ {
     def aria2_bin = "/home/lt692/.conda/envs/aria2_env/bin/aria2c"
     def aria2_connections = params.aria2_connections as int
     def aria2_splits = params.aria2_splits as int
+    def aria2_fallback_connections = params.aria2_fallback_connections as int
+    def aria2_fallback_splits = params.aria2_fallback_splits as int
+    def aria2_fallback_retry_wait = params.aria2_fallback_retry_wait as int
     def max_download_attempts = params.max_download_attempts as int
     
     """
@@ -284,34 +287,60 @@ process DOWNLOAD_FASTQ {
                 fi
             fi
 
+            local aria2_log="\${target}.aria2.log"
             local attempt=1
             while (( attempt <= ${max_download_attempts} )); do
-                echo "INFO: Downloading \$url with aria2c (attempt \$attempt/${max_download_attempts})..."
-                ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 \
+                echo "INFO: Normal aria2c attempt \$attempt/${max_download_attempts} for \$target with -x ${aria2_connections} -s ${aria2_splits}. Log: \$aria2_log"
+                if ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 \
                     --file-allocation=none \
-                    --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url"
+                    --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url" >"\$aria2_log" 2>&1; then
+                    echo "INFO: Normal aria2c attempt completed for \$target; validating gzip and MD5."
+                elif grep -Eq 'status=403|status=429|errorCode=22' "\$aria2_log"; then
+                    echo "WARN: Normal aria2c attempt for \$target hit HTTP 403/429 or aria2 errorCode=22; retrying in fallback single-connection mode. See \$aria2_log" >&2
+                    if ${aria2_bin} -x ${aria2_fallback_connections} -s ${aria2_fallback_splits} -c -m 5 \
+                        --retry-wait=${aria2_fallback_retry_wait} \
+                        --timeout=120 \
+                        --connect-timeout=60 \
+                        --file-allocation=none \
+                        --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url" >>"\$aria2_log" 2>&1; then
+                        echo "INFO: Fallback aria2c single-connection mode completed for \$target; validating gzip and MD5."
+                    else
+                        echo "WARN: Fallback aria2c single-connection mode failed for \$target. See \$aria2_log" >&2
+                        rm -f "\$target" "\$target.aria2"
+                        ((attempt++))
+                        continue
+                    fi
+                else
+                    echo "WARN: Normal aria2c attempt failed for \$target without a fallback-triggering status. See \$aria2_log" >&2
+                    rm -f "\$target" "\$target.aria2"
+                    ((attempt++))
+                    continue
+                fi
 
                 if ! gzip -t "\$target"; then
-                    echo "WARN: gzip integrity check failed for \$target. Removing corrupted file before retry." >&2
+                    echo "WARN: Final gzip status for \$target: FAILED. Removing corrupted file before retry." >&2
                     rm -f "\$target" "\$target.aria2"
                     ((attempt++))
                     continue
                 fi
+                echo "INFO: Final gzip status for \$target: PASSED."
 
                 if ! echo "\$expected_md5  \$target" | md5sum -c -; then
-                    echo "WARN: MD5 check failed for \$target. Removing corrupted file before retry." >&2
+                    echo "WARN: Final MD5 status for \$target: FAILED. Removing corrupted file before retry." >&2
                     rm -f "\$target" "\$target.aria2"
                     ((attempt++))
                     continue
                 fi
 
+                echo "INFO: Final MD5 status for \$target: PASSED."
                 echo "INFO: gzip and MD5 checks passed for \$target."
+                rm -f "\$target.aria2"
                 return 0
             done
 
-            echo "ERROR: \$target failed gzip and/or MD5 validation after ${max_download_attempts} download attempts." >&2
+            echo "ERROR: \$target failed download and/or validation after ${max_download_attempts} download attempts. See \$aria2_log" >&2
             rm -f "\$target" "\$target.aria2"
-            record_failed_download "\$run_id" "\$fastq_file" "MD5_FAILED_AFTER_RETRIES"
+            record_failed_download "\$run_id" "\$fastq_file" "DOWNLOAD_OR_VALIDATION_FAILED_AFTER_RETRIES"
             return 1
         }
 
