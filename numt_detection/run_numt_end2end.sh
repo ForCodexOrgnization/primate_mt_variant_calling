@@ -54,4 +54,9 @@ bash "${SCRIPT_DIR}/process_numt_candidates_one_ready.sh" \
   --bed "$BED_PATH" \
   --config "$CONFIG"
 
+[[ -e "$HIGHCONF_PATH" ]] || {
+  echo "ERROR: Missing required file after best-hit analysis: $HIGHCONF_PATH" >&2
+  exit 1
+}
+
 echo "[$(date)] End-to-end pipeline finished."

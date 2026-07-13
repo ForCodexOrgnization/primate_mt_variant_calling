@@ -77,10 +77,20 @@ process RUN_NUMT_END2END {
     source ${numt_config}
 
     SAMPLE_ID='${sample_id}'
+    BESTHIT_DIR="\${BESTHIT_OUTDIR:-/nfs/roberts/pi/pi_njl27/lt692/primate_results_numt_besthit}"
+
+    require_highconf_output() {
+      local highconf_path="\${BESTHIT_DIR}/\${SAMPLE_ID}.highconf_numt.bed"
+      [[ -e "\${highconf_path}" ]] || {
+        echo "ERROR: Missing required file after NUMT end-to-end run: \${highconf_path}" >&2
+        return 1
+      }
+    }
 
     if [[ '${config_mode}' == 'direct' ]]; then
       : "\${DISCOVERY_OUTDIR:?missing DISCOVERY_OUTDIR in config}"
       if run_with_retry ${numt_config} "\${SAMPLE_ID}" "\${DISCOVERY_OUTDIR}"; then
+        require_highconf_output
         touch ${sample_id}.numt_end2end.done
         exit 0
       else
@@ -174,6 +184,7 @@ CFG
     fi
     rm -f "\${TMP_CFG}"
     [[ "\${status}" -eq 0 ]] || exit "\${status}"
+    require_highconf_output
     touch ${sample_id}.numt_end2end.done
     """
 }
