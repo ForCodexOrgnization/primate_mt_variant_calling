@@ -244,23 +244,37 @@ fi
 validate_file_exists "${NUMT_BED}"
 log "NUMT validation passed for ${SAMPLE_ID}"
 
-log "Starting round 1 for ${SAMPLE_ID}"
-(
-    cd "${ROUND1_LAUNCH_DIR}"
-    nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
-        -profile cluster \
-        -resume \
-        -w "${ROUND1_WORK_DIR}" \
-        --sample_tsv "${SAMPLE_TSV}" \
-        --outdir "${ROUND1_OUTDIR}" \
-        --cram_dirs "${PRE_OUTPUT_DIR}" \
-        --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}"
-)
-
 ROUND1_BAM="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/candidate_reads/${SAMPLE_ID}.with_mates.bam"
 ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1_variant_calling_decoy"
 ROUND1_NUMT_FA="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_ref/${SAMPLE_ID}.original_numt.fa"
 ROUND1_NUMT_VCF="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_variant_calling/${SAMPLE_ID}.numt_decoy.raw.vcf.gz"
+
+round1_outputs_complete() {
+    [[ -s "${ROUND1_BAM}" ]] || return 1
+    [[ -d "${ROUND1_VCF_DIR}" ]] || return 1
+    find "${ROUND1_VCF_DIR}" -type f -name "${SAMPLE_ID}.numt_decoy.clean.final.split.vcf" -size +0c -print -quit | grep -q . || return 1
+    [[ -e "${ROUND1_NUMT_FA}" ]] || return 1
+    [[ -s "${ROUND1_NUMT_VCF}" ]] || return 1
+    [[ -s "${ROUND1_NUMT_VCF}.tbi" ]] || return 1
+}
+
+if round1_outputs_complete; then
+    log "Skipping round 1 for ${SAMPLE_ID}; existing round 1 outputs were found"
+else
+    log "Starting round 1 for ${SAMPLE_ID}"
+    (
+        cd "${ROUND1_LAUNCH_DIR}"
+        nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
+            -profile cluster \
+            -resume \
+            -w "${ROUND1_WORK_DIR}" \
+            --sample_tsv "${SAMPLE_TSV}" \
+            --outdir "${ROUND1_OUTDIR}" \
+            --cram_dirs "${PRE_OUTPUT_DIR}" \
+            --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}"
+    )
+fi
+
 validate_file_nonempty "${ROUND1_BAM}"
 [[ -d "${ROUND1_VCF_DIR}" ]] || fail "Missing required directory: ${ROUND1_VCF_DIR}"
 find "${ROUND1_VCF_DIR}" -type f -name "${SAMPLE_ID}.numt_decoy.clean.final.split.vcf" -size +0c -print -quit | grep -q . \
@@ -270,19 +284,29 @@ validate_file_nonempty "${ROUND1_NUMT_VCF}"
 validate_file_nonempty "${ROUND1_NUMT_VCF}.tbi"
 log "Round 1 validation passed for ${SAMPLE_ID}"
 
-log "Starting round 2 for ${SAMPLE_ID}"
-(
-    cd "${ROUND2_LAUNCH_DIR}"
-    nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
-        -profile cluster \
-        -resume \
-        -w "${ROUND2_WORK_DIR}" \
-        --sample_tsv "${SAMPLE_TSV}" \
-        --outdir "${ROUND_OUTPUT_DIR}" \
-        --round1_outdir "${ROUND1_OUTDIR}"
-)
-
 ROUND2_VCF_DIR="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2_variant_calling_original_coords"
+
+round2_outputs_complete() {
+    [[ -d "${ROUND2_VCF_DIR}" ]] || return 1
+    find "${ROUND2_VCF_DIR}" -type f -name "${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz" -size +0c -print -quit | grep -q . || return 1
+}
+
+if round2_outputs_complete; then
+    log "Skipping round 2 for ${SAMPLE_ID}; existing round 2 outputs were found"
+else
+    log "Starting round 2 for ${SAMPLE_ID}"
+    (
+        cd "${ROUND2_LAUNCH_DIR}"
+        nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
+            -profile cluster \
+            -resume \
+            -w "${ROUND2_WORK_DIR}" \
+            --sample_tsv "${SAMPLE_TSV}" \
+            --outdir "${ROUND_OUTPUT_DIR}" \
+            --round1_outdir "${ROUND1_OUTDIR}"
+    )
+fi
+
 [[ -d "${ROUND2_VCF_DIR}" ]] || fail "Missing required directory: ${ROUND2_VCF_DIR}"
 find "${ROUND2_VCF_DIR}" -type f -name "${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz" -size +0c -print -quit | grep -q . \
     || fail "Missing or empty round 2 final VCF under: ${ROUND2_VCF_DIR}"
