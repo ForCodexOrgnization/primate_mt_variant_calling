@@ -99,7 +99,18 @@ process RUN_NUMT_END2END {
 
     resolve_cram_in_root() {
       local sid="\$1" root="\$2"
-      find "\${root}" -type f \( -name "\${sid}.cram" -o -name "\${sid}*.cram" \) | head -n 1 || true
+      local found
+      found="\$(
+        find "\${root}" -type f -name "\${sid}.cram" | head -n 1
+      )"
+
+      if [[ -z "\${found}" ]]; then
+        found="\$(
+          find "\${root}" -type f -name "\${sid}*.cram" | head -n 1
+        )"
+      fi
+
+      printf '%s\n' "\${found}"
     }
 
     find_ref() {
