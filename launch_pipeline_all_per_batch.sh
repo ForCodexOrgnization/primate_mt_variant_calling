@@ -45,12 +45,17 @@ BATCH_LIST_DIR="${BATCH_LIST_DIR:-${NF_BASE_WORK_DIR}/batch_lists}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 
+log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
+fail() { echo "ERROR: $*" >&2; exit 1; }
+
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
     repo_dir="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
 else
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 cd "${repo_dir}"
+NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${repo_dir}/${NF_CONFIG_FILE}"; fi)"
+[[ -s "${NF_CONFIG_PATH}" ]] || fail "NF_CONFIG_FILE does not exist or is empty: ${NF_CONFIG_PATH}"
 mkdir -p "${LOG_DIR}"
 
 echo "INFO: FULL_SAMPLE_LIST=${FULL_SAMPLE_LIST}"
@@ -62,10 +67,8 @@ echo "INFO: NUMT_BESTHIT_OUTDIR=${NUMT_BESTHIT_OUTDIR}"
 echo "INFO: NUMT_NF_BASE_WORK_DIR=${NUMT_NF_BASE_WORK_DIR}"
 echo "INFO: NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
 echo "INFO: NF_CONFIG_FILE=${NF_CONFIG_FILE}"
+echo "INFO: NF_CONFIG_PATH=${NF_CONFIG_PATH}"
 echo "INFO: CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}"
-
-log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
-fail() { echo "ERROR: $*" >&2; exit 1; }
 
 cleanup_work_dir_if_requested() {
     local stage_name="$1"
@@ -184,9 +187,13 @@ run_numt_nextflow() {
     log "  NUMT work dir=${numt_batch_work_dir}"
     log "  NUMT concurrency/queue size=${NUMT_CONCURRENT}"
 
-    NXF_OPTS="${NXF_OPTS:-}" nextflow run "${NUMT_LAUNCH_SCRIPT}" \
+    module load Nextflow/24.10.2 || module load Nextflow/24.04.4
+    command -v nextflow >/dev/null 2>&1 || fail "nextflow not found after loading Nextflow module"
+    log "  nextflow=$(command -v nextflow)"
+    nextflow -version
+
+    NXF_OPTS="${NXF_OPTS:-}" nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_LAUNCH_SCRIPT}" \
         -profile cluster \
-        -c "${NF_CONFIG_FILE}" \
         -work-dir "${numt_batch_work_dir}" \
         -with-report "${numt_batch_dir}/nextflow.report.html" \
         -with-timeline "${numt_batch_dir}/nextflow.timeline.html" \
