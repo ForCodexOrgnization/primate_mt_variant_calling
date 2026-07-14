@@ -119,9 +119,8 @@ workflow {
                 n_pairs : row.expected_pairs.toInteger()
             ]
             // 必须使用 file() 包装路径，Nextflow 才能在进程间正确传递文件
-            def r1 = file(row.r1)
-            def r2 = row.layout == 'PE' ? file(row.r2) : file(row.r1)
-            tuple(meta, row.species_name, row.ref_name, r1, r2)
+            def reads = row.layout == 'PE' ? [ file(row.r1), file(row.r2) ] : [ file(row.r1) ]
+            tuple(meta, row.species_name, row.ref_name, reads)
         }
 
     // 第三步：比对并排序
@@ -393,7 +392,7 @@ process ALIGN_AND_SORT {
     // errorStrategy = { task.exitStatus in [1, 137, 140, 143] ? 'retry' : 'finish' }
 
     input:
-    tuple val(meta), val(species_name), val(ref_name), path(r1), path(r2)
+    tuple val(meta), val(species_name), val(ref_name), path(reads)
 
     output:
     tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.${meta.pair_id}.sorted.bam"), path("${meta.id}.${meta.pair_id}.sorted.bam.bai"), emit: bam
@@ -403,7 +402,7 @@ process ALIGN_AND_SORT {
     // 将比例从 0.7 降至 0.6，预留更多 buffer 防止系统层面杀进程
     def sort_mem = task.memory ? "${(task.memory.toGiga() * 0.6 / task.cpus).toInteger()}G" : "2G"
     def bam_output = "${meta.id}.${meta.pair_id}.sorted.bam"
-    def bwa_inputs = meta.layout == 'PE' ? "\"${r1}\" \"${r2}\"" : "\"${r1}\""
+    def bwa_inputs = meta.layout == 'PE' ? "\"${reads[0]}\" \"${reads[1]}\"" : "\"${reads[0]}\""
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
@@ -424,9 +423,9 @@ process ALIGN_AND_SORT {
     echo "INFO: Validating input FASTQ integrity..."
     # 快速检查 gzip 文件是否损坏，如果是损坏文件则在此处提前终止报错
     if [[ "${meta.layout}" == "PE" ]]; then
-        gzip -t "${r1}" "${r2}"
+        gzip -t "${reads[0]}" "${reads[1]}"
     elif [[ "${meta.layout}" == "SE" ]]; then
-        gzip -t "${r1}"
+        gzip -t "${reads[0]}"
     else
         echo "ERROR: Unsupported FASTQ layout: ${meta.layout}" >&2
         exit 1
