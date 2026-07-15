@@ -115,6 +115,7 @@ SAMPLE_WORK_ROOT="${NF_BASE_WORK_DIR}/${SAMPLE_ID}"
 SAMPLE_TSV_DIR="${SAMPLE_WORK_ROOT}/inputs"
 SAMPLE_TSV="${SAMPLE_TSV_DIR}/${SAMPLE_ID}.sample.tsv"
 PRE_WORK_DIR="${SAMPLE_WORK_ROOT}/pre"
+NUMT_WORK_DIR="${SAMPLE_WORK_ROOT}/numt"
 ROUND1_WORK_DIR="${SAMPLE_WORK_ROOT}/round1"
 ROUND2_WORK_DIR="${SAMPLE_WORK_ROOT}/round2"
 # Run each Nextflow invocation from a sample/stage-specific launch directory so
@@ -125,7 +126,7 @@ ROUND1_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round1"
 ROUND2_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round2"
 NUMT_CONFIG="${SAMPLE_WORK_ROOT}/${SAMPLE_ID}.numt.config"
 
-mkdir -p "${SAMPLE_TSV_DIR}" "${PRE_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}" \
+mkdir -p "${SAMPLE_TSV_DIR}" "${PRE_WORK_DIR}" "${NUMT_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}" \
     "${PRE_LAUNCH_DIR}" "${NUMT_LAUNCH_DIR}" "${ROUND1_LAUNCH_DIR}" "${ROUND2_LAUNCH_DIR}" \
     "${NUMT_DISCOVERY_OUTROOT}" "${NUMT_BESTHIT_OUTDIR}"
 printf '%s\n' "${SAMPLE_LINE}" > "${SAMPLE_TSV}"
@@ -235,7 +236,7 @@ CONFIG
         nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_DIR}/numt_end2end.nf" \
             -profile cluster \
             -resume \
-            -w "${NF_BASE_WORK_DIR}/${SAMPLE_ID}/numt" \
+            -w "${NUMT_WORK_DIR}" \
             --numt_config "${NUMT_CONFIG}"
     )
 fi
@@ -314,7 +315,7 @@ log "Round 2 validation passed for ${SAMPLE_ID}"
 
 if [[ "${CLEAN_ON_SUCCESS}" == "1" || "${CLEAN_ON_SUCCESS}" == "true" ]]; then
     log "CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; deleting this sample's Nextflow work directories only"
-    rm -rf "${PRE_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}"
+    rm -rf "${PRE_WORK_DIR}" "${NUMT_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}"
 else
     log "CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; retaining work directories for resume/debugging"
 fi

@@ -1,6 +1,49 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
+if (!params.containsKey('CLEAN_ON_SUCCESS') || params.CLEAN_ON_SUCCESS == null) {
+    params.CLEAN_ON_SUCCESS = false
+}
+
+def paramToBoolean = { value ->
+    if (value instanceof Boolean) {
+        return value
+    }
+    return value?.toString()?.trim()?.toLowerCase() in ['1', 'true', 'yes', 'y', 'on']
+}
+
+def sampleHasExistingNumtResults = { String sampleId ->
+    def requiredPaths = [
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.chrM_plus_numt.fa",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.chrM_plus_numt.fa.fai",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.original_numt.fa",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.original_numt.fa.fai",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.decoy_numt.interval_list",
+        "${params.outdir}/${sampleId}/round_1/candidate_reads/${sampleId}.with_mates.bam",
+        "${params.outdir}/${sampleId}/round_1/candidate_reads/${sampleId}.with_mates.bam.bai",
+        "${params.outdir}/${sampleId}/round_1/decoy_realign/${sampleId}.decoy_realign.bam",
+        "${params.outdir}/${sampleId}/round_1/decoy_realign/${sampleId}.decoy_realign.bam.bai",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.raw.vcf.gz",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.raw.vcf.gz.tbi",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.pass.split.vcf.gz",
+        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.pass.split.vcf.gz.tbi",
+        "${params.outdir}/${sampleId}/round_1/consensus_numt_ref/${sampleId}.consensus_numt.fa",
+        "${params.outdir}/${sampleId}/round_1/consensus_numt_ref/${sampleId}.consensus_numt.fa.fai",
+        "${params.outdir}/${sampleId}/round_1/chrM_clean/${sampleId}.final_chrM.sorted.bam",
+        "${params.outdir}/${sampleId}/round_1/chrM_clean/${sampleId}.final_chrM.sorted.bam.bai",
+        "${params.outdir}/${sampleId}/round_1/alignment_numt_decoy/${sampleId}.numt_decoy.clean.cram",
+        "${params.outdir}/${sampleId}/round_1/alignment_numt_decoy/${sampleId}.numt_decoy.clean.cram.crai"
+    ]
+
+    def missing = requiredPaths.findAll { !file(it).exists() }
+    if (!missing.isEmpty()) {
+        log.debug "Sample ${sampleId} is not a completed NUMT round1 sample; missing outputs: ${missing.join(', ')}"
+        return false
+    }
+
+    return true
+}
+
 /*
  * PRIMATE mtDNA PIPELINE - NUMT DECOY ROUND1
  * ------------------------------------------------------------
@@ -37,6 +80,7 @@ mt ref dir:              ${params.ref_dir}
 NUMT BED dir:            ${params.numt_bed_dir}
 Consensus NUMT dir:      ${params.consensus_numt_dir ?: 'not_set'}
 WDL Script:              ${params.wdl_script}
+CLEAN_ON_SUCCESS:        ${params.CLEAN_ON_SUCCESS}
 ========================================
 """
 
@@ -49,22 +93,8 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         def species = row[1].trim()
         def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species
 
-        def round1_dir      = file("${params.outdir}/${sample_id}/round_1")
-        def vc_dir          = file("${params.outdir}/${sample_id}/round_1_variant_calling_decoy")
-        def numt_vc_vcf        = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz")
-        def numt_vc_tbi        = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.raw.vcf.gz.tbi")
-        def numt_consensus_vcf = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.pass.split.vcf.gz")
-        def numt_consensus_tbi = file("${params.outdir}/${sample_id}/round_1/numt_decoy_variant_calling/${sample_id}.numt_decoy.pass.split.vcf.gz.tbi")
-        def consensus_numt_fa  = file("${params.outdir}/${sample_id}/round_1/consensus_numt_ref/${sample_id}.consensus_numt.fa")
-        def consensus_numt_fai = file("${params.outdir}/${sample_id}/round_1/consensus_numt_ref/${sample_id}.consensus_numt.fa.fai")
-        def decoy_interval     = file("${params.outdir}/${sample_id}/round_1/numt_decoy_ref/${sample_id}.decoy_numt.interval_list")
-
-        if (round1_dir.exists() && vc_dir.exists() &&
-            numt_vc_vcf.exists() && numt_vc_tbi.exists() &&
-            numt_consensus_vcf.exists() && numt_consensus_tbi.exists() &&
-            consensus_numt_fa.exists() && consensus_numt_fai.exists() &&
-            decoy_interval.exists()) {
-            log.info "SKIP completed sample ${sample_id}: existing mtDNA outputs, raw NUMT VCF, filtered PASS NUMT VCF, consensus NUMT FASTA, and decoy interval"
+        if (sampleHasExistingNumtResults(sample_id)) {
+            log.info "SKIP completed sample ${sample_id}: existing NUMT round1 outputs found under ${params.outdir}/${sample_id}/round_1"
             return null
         }
 
@@ -108,6 +138,20 @@ workflow {
 workflow.onComplete {
     if( workflow.success ) {
         log.info "Pipeline completed successfully. Output files are in: ${params.outdir}"
+        if (paramToBoolean(params.CLEAN_ON_SUCCESS)) {
+            def workDirPath = workflow.workDir?.toString()
+            if (workDirPath) {
+                log.info "CLEAN_ON_SUCCESS is enabled; deleting Nextflow work directory: ${workDirPath}"
+                def workDirFile = new File(workDirPath)
+                if (workDirFile.exists()) {
+                    workDirFile.deleteDir()
+                }
+            } else {
+                log.warn "CLEAN_ON_SUCCESS is enabled, but workflow.workDir is not available; no work directory was deleted."
+            }
+        } else {
+            log.info "CLEAN_ON_SUCCESS is disabled; keeping Nextflow work directory for resume/debug."
+        }
     } else {
         log.error "Pipeline finished with errors. Check .nextflow.log and failed task work dirs."
     }
