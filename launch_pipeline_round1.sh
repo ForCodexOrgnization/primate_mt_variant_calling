@@ -12,6 +12,7 @@ FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/nfs/roberts/project/pi_njl27/lt692/primat
 BATCH_SIZE="${BATCH_SIZE:-5}"
 CONCURRENT_BATCHES="${CONCURRENT_BATCHES:-2}"
 NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_work_dir_round1}"
+CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-0}"
 if [[ -n "${BATCH_FILE:-}" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR:?ERROR: OUTPUT_DIR must be explicitly set in BATCH_FILE mode}"
     CRAM_DIRS="${CRAM_DIRS:?ERROR: CRAM_DIRS must be explicitly set in BATCH_FILE mode}"
@@ -25,6 +26,17 @@ fi
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 module load Nextflow/24.10.2
 # ==============================================================================
+
+cleanup_work_dir_if_requested() {
+    local work_dir="$1"
+
+    if [[ "${CLEAN_ON_SUCCESS}" == "1" || "${CLEAN_ON_SUCCESS}" == "true" ]]; then
+        echo "INFO: CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; deleting Nextflow work directory: ${work_dir}"
+        rm -rf "${work_dir}"
+    else
+        echo "INFO: CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; retaining Nextflow work directory for resume/debug: ${work_dir}"
+    fi
+}
 
 read_sample_ids() {
     local sample_file="$1"
@@ -76,6 +88,7 @@ if [ -n "${BATCH_FILE:-}" ]; then
     echo "  NUMT_BED_DIR=${NUMT_BED_DIR}"
     echo "  NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
     echo "  WORK_DIR=${WORK_DIR}"
+    echo "  CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}"
 
     nextflow run "${SUBMIT_DIR}/primate_pipeline_numt_decoy_round1.nf" \
         -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
@@ -85,7 +98,8 @@ if [ -n "${BATCH_FILE:-}" ]; then
         --sample_tsv "${BATCH_FILE}" \
         --outdir "${OUTPUT_DIR}" \
         --cram_dirs "${CRAM_DIRS}" \
-        --numt_bed_dir "${NUMT_BED_DIR}"
+        --numt_bed_dir "${NUMT_BED_DIR}" \
+        --CLEAN_ON_SUCCESS "${CLEAN_ON_SUCCESS}"
 
     validate_round1_outputs "${BATCH_FILE}" "${OUTPUT_DIR}"
 
@@ -95,7 +109,7 @@ if [ -n "${BATCH_FILE:-}" ]; then
     if [[ "${DEFER_WORK_DIR_CLEANUP:-0}" == "1" ]]; then
         echo "INFO: DEFER_WORK_DIR_CLEANUP=1; retaining Nextflow work directory for parent cleanup: ${WORK_DIR}"
     else
-        rm -rf "${WORK_DIR}"
+        cleanup_work_dir_if_requested "${WORK_DIR}"
     fi
     exit 0
 fi
@@ -162,21 +176,20 @@ else
         --sample_tsv "${BATCH_FILE}" \
         --outdir "${OUTPUT_DIR}" \
         --cram_dirs "${CRAM_DIRS}" \
-        --numt_bed_dir "${NUMT_BED_DIR}"
+        --numt_bed_dir "${NUMT_BED_DIR}" \
+        --CLEAN_ON_SUCCESS "${CLEAN_ON_SUCCESS}"
 
     NF_EXIT=$?
     set -e
 
     if [ "${NF_EXIT}" -eq 0 ]; then
         echo "Batch ${SLURM_ARRAY_TASK_ID} completed successfully."
-        echo "Cleaning up Nextflow work directory: ${WORK_DIR}"
-
         cd "${SUBMIT_DIR}"
 
         # 谨慎保留；确认你确实想删输出目录下所有 inputs 目录
         find "$(readlink -f "${OUTPUT_DIR}")" -type d -name "inputs" -exec rm -rf {} +
 
-        rm -rf "${WORK_DIR}"
+        cleanup_work_dir_if_requested "${WORK_DIR}"
         # rm -f "${BATCH_FILE}"
     else
         echo "Batch ${SLURM_ARRAY_TASK_ID} failed (exit code ${NF_EXIT})."

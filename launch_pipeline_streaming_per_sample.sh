@@ -271,7 +271,8 @@ else
             --sample_tsv "${SAMPLE_TSV}" \
             --outdir "${ROUND1_OUTDIR}" \
             --cram_dirs "${PRE_OUTPUT_DIR}" \
-            --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}"
+            --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}" \
+            --CLEAN_ON_SUCCESS "${CLEAN_ON_SUCCESS}"
     )
 fi
 
