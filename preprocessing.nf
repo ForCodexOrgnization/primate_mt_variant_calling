@@ -580,12 +580,7 @@ process ALIGN_LARGE_FASTQ_STREAMING_CHUNKS {
     echo "INFO: compression command: \${GZIP_CMD}"
     echo "INFO: decompression command: \${ZCAT_CMD}"
 
-    if [[ "${meta.layout}" == "PE" ]]; then
-        \${ZCAT_CMD} "${r1}" >/dev/null
-        \${ZCAT_CMD} "${r2}" >/dev/null
-    elif [[ "${meta.layout}" == "SE" ]]; then
-        \${ZCAT_CMD} "${r1}" >/dev/null
-    else
+    if [[ "${meta.layout}" != "PE" && "${meta.layout}" != "SE" ]]; then
         echo "ERROR: Unsupported FASTQ layout: ${meta.layout}" >&2
         exit 1
     fi
@@ -771,7 +766,7 @@ if not chunk_bams:
 
 with open("chunk_bam.list", "wt") as out:
     for bam in sorted(chunk_bams):
-        out.write(str(bam) + "\n")
+        print(str(bam), file=out)
 
 log("Merging {} chunk BAMs".format(len(chunk_bams)))
 run_cmd("samtools merge -@ {} -f -b chunk_bam.list merged.tmp.bam".format(shlex.quote(str(bwa_threads))))
