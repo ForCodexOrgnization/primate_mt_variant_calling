@@ -480,8 +480,6 @@ process ALIGN_AND_SORT {
 
     script:
     def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
-    // 将比例从 0.7 降至 0.6，预留更多 buffer 防止系统层面杀进程
-    def sort_mem = task.memory ? "${(task.memory.toGiga() * 0.6 / task.cpus).toInteger()}G" : "2G"
     def bam_output = "${meta.id}.${meta.pair_id}.sorted.bam"
     def bwa_inputs = meta.layout == 'PE' ? "\"${reads[0]}\" \"${reads[1]}\"" : "\"${reads[0]}\""
     """
@@ -532,13 +530,14 @@ process ALIGN_AND_SORT {
     TMP_DIR="tmp_sort_${meta.pair_id}"
 
     echo "INFO: Starting BWA alignment and Samtools sort..."
-    echo "INFO: Per-thread sort memory: ${sort_mem}"
+    echo "INFO: Samtools sort threads: ${params.align_sort_threads}"
+    echo "INFO: Per-thread sort memory: ${params.align_sort_mem_per_thread}"
 
     # ===== 执行核心管道 =====
     bwa mem -K 100000000 -v 3 -t ${task.cpus} -M -Y \\
       -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
       "${ref_file}" ${bwa_inputs} | \\
-    samtools sort -@ ${task.cpus} -m ${sort_mem} \\
+    samtools sort -@ ${params.align_sort_threads} -m ${params.align_sort_mem_per_thread} \\
       -T "\${TMP_DIR}/sort_prefix" \\
       -o "${bam_output}" -
 
