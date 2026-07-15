@@ -12,7 +12,10 @@ if (!params.containsKey('chunked_alignment_size_threshold_gb') || params.chunked
     params.chunked_alignment_size_threshold_gb = 20
 }
 if (!params.containsKey('fastq_chunk_reads') || params.fastq_chunk_reads == null) {
-    params.fastq_chunk_reads = 5000000
+    params.fastq_chunk_reads = 25000000
+}
+if (!params.containsKey('cleanup_chunk_intermediates') || params.cleanup_chunk_intermediates == null) {
+    params.cleanup_chunk_intermediates = true
 }
 if (!params.containsKey('align_sort_threads') || params.align_sort_threads == null) {
     params.align_sort_threads = 4
@@ -171,41 +174,9 @@ workflow {
 
     ALIGN_AND_SORT(ch_fastq_alignment_routes.standard)
 
-    SPLIT_FASTQ_CHUNKS(ch_fastq_alignment_routes.chunked)
+    ALIGN_LARGE_FASTQ_STREAMING_CHUNKS(ch_fastq_alignment_routes.chunked)
 
-    ch_fastq_chunks = SPLIT_FASTQ_CHUNKS.out.chunks_tsv
-        .splitCsv(header: true, sep: '\t')
-        .map { row ->
-            def meta = [
-                id       : row.sample_id,
-                pair_id  : row.run_id,
-                layout   : row.layout,
-                n_pairs  : row.expected_pairs.toInteger(),
-                chunk_id : row.chunk_id,
-                n_chunks : row.expected_chunks.toInteger()
-            ]
-            def reads = row.layout == 'PE' ? [ file(row.r1), file(row.r2) ] : [ file(row.r1) ]
-            tuple(meta, row.species_name, row.ref_name, reads)
-        }
-
-    ALIGN_AND_SORT_CHUNK(ch_fastq_chunks)
-
-    ch_chunk_bam_grouped = ALIGN_AND_SORT_CHUNK.out.bam
-        .map { meta, species, ref_name, bam, bai ->
-            tuple(groupKey("${meta.id}::${meta.pair_id}", meta.n_chunks), meta, species, ref_name, bam)
-        }
-        .groupTuple()
-        .map { gKey, metas, species_list, refs, bams ->
-            def meta = metas[0]
-            if (bams.size() != meta.n_chunks) {
-                error "CRITICAL: Run ${meta.id}.${meta.pair_id} missing chunks. Expected ${meta.n_chunks}, got ${bams.size()}."
-            }
-            tuple(meta, species_list[0], refs[0], bams)
-        }
-
-    MERGE_RUN_CHUNK_BAMS(ch_chunk_bam_grouped)
-
-    ch_per_run_bams = ALIGN_AND_SORT.out.bam.mix(MERGE_RUN_CHUNK_BAMS.out.bam)
+    ch_per_run_bams = ALIGN_AND_SORT.out.bam.mix(ALIGN_LARGE_FASTQ_STREAMING_CHUNKS.out.bam)
 
     // 第四步：按 Sample ID 分组，并强制校验数量
     ch_bam_grouped = ch_per_run_bams
@@ -554,6 +525,278 @@ process ALIGN_AND_SORT {
     """
 }
 
+process ALIGN_LARGE_FASTQ_STREAMING_CHUNKS {
+    tag "${meta.id}.${meta.pair_id}"
+    label 'alignment_related'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(reads)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.${meta.pair_id}.sorted.bam"), path("${meta.id}.${meta.pair_id}.sorted.bam.bai"), emit: bam
+
+    script:
+    def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
+    def r1 = reads[0]
+    def r2 = meta.layout == 'PE' ? reads[1] : null
+    def cleanup_chunks = params.cleanup_chunk_intermediates ? 'true' : 'false'
+    """
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+
+    cleanup_streaming_outputs() {
+        echo "WARN: ALIGN_LARGE_FASTQ_STREAMING_CHUNKS interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial outputs." >&2
+        rm -f "${meta.id}.${meta.pair_id}.sorted.bam" "${meta.id}.${meta.pair_id}.sorted.bam.bai" merged.tmp.bam merged.tmp.bam.bai chunk_bam.list
+        rm -rf chunks chunk_bams sort_tmp
+    }
+
+    trap cleanup_streaming_outputs INT TERM HUP QUIT ERR
+
+    rm -f "${meta.id}.${meta.pair_id}.sorted.bam" "${meta.id}.${meta.pair_id}.sorted.bam.bai" merged.tmp.bam merged.tmp.bam.bai chunk_bam.list
+    rm -rf chunks chunk_bams sort_tmp
+    mkdir -p chunks chunk_bams sort_tmp
+
+    echo "INFO: ALIGN_LARGE_FASTQ_STREAMING_CHUNKS for ${meta.id}.${meta.pair_id}"
+    echo "INFO: layout=${meta.layout}"
+    echo "INFO: fastq_chunk_reads=${params.fastq_chunk_reads}"
+    echo "INFO: align_sort_threads=${params.align_sort_threads}"
+    echo "INFO: align_sort_mem_per_thread=${params.align_sort_mem_per_thread}"
+    echo "INFO: cleanup_chunk_intermediates=${params.cleanup_chunk_intermediates}"
+    echo "INFO: SLURM_JOB_ID=\${SLURM_JOB_ID:-}"
+    echo "INFO: HOSTNAME=\$(hostname)"
+    df -h .
+    df -ih .
+    ulimit -a
+    ls -lh ${r1} ${r2 ?: ''}
+
+    if command -v pigz >/dev/null 2>&1; then
+        GZIP_CMD="pigz -p ${task.cpus}"
+        ZCAT_CMD="pigz -dc"
+    else
+        GZIP_CMD="gzip"
+        ZCAT_CMD="gzip -dc"
+    fi
+    export GZIP_CMD ZCAT_CMD
+    echo "INFO: compression command: \${GZIP_CMD}"
+    echo "INFO: decompression command: \${ZCAT_CMD}"
+
+    if [[ "${meta.layout}" == "PE" ]]; then
+        \${ZCAT_CMD} "${r1}" >/dev/null
+        \${ZCAT_CMD} "${r2}" >/dev/null
+    elif [[ "${meta.layout}" == "SE" ]]; then
+        \${ZCAT_CMD} "${r1}" >/dev/null
+    else
+        echo "ERROR: Unsupported FASTQ layout: ${meta.layout}" >&2
+        exit 1
+    fi
+
+    for ext in amb ann bwt pac sa; do
+        [[ -s "${ref_file}.\${ext}" ]] || { echo "ERROR: Missing BWA index: ${ref_file}.\${ext}" >&2; exit 1; }
+    done
+    [[ -s "${ref_file}.fai" ]] || { echo "ERROR: Missing samtools faidx: ${ref_file}.fai" >&2; exit 1; }
+
+    export SAMPLE_ID="${meta.id}"
+    export PAIR_ID="${meta.pair_id}"
+    export LAYOUT="${meta.layout}"
+    export R1_FASTQ="${r1}"
+    export R2_FASTQ="${r2 ?: ''}"
+    export REF_FILE="${ref_file}"
+    export CHUNK_READS="${params.fastq_chunk_reads}"
+    export BWA_THREADS="${task.cpus}"
+    export SORT_THREADS="${params.align_sort_threads}"
+    export SORT_MEM="${params.align_sort_mem_per_thread}"
+    export CLEANUP_CHUNK_INTERMEDIATES="${cleanup_chunks}"
+
+    python <<'PY_STREAM_ALIGN'
+import gzip
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sample_id = os.environ["SAMPLE_ID"]
+pair_id = os.environ["PAIR_ID"]
+layout = os.environ["LAYOUT"]
+r1_fastq = os.environ["R1_FASTQ"]
+r2_fastq = os.environ.get("R2_FASTQ", "")
+ref_file = os.environ["REF_FILE"]
+chunk_reads = int(os.environ["CHUNK_READS"])
+bwa_threads = os.environ["BWA_THREADS"]
+sort_threads = os.environ["SORT_THREADS"]
+sort_mem = os.environ["SORT_MEM"]
+gzip_cmd = shlex.split(os.environ["GZIP_CMD"])
+cleanup = os.environ.get("CLEANUP_CHUNK_INTERMEDIATES", "true").lower() == "true"
+
+Path("chunks").mkdir(exist_ok=True)
+Path("chunk_bams").mkdir(exist_ok=True)
+Path("sort_tmp").mkdir(exist_ok=True)
+
+
+def log(msg):
+    print("{} INFO: {}".format(datetime.now().isoformat(timespec="seconds"), msg), flush=True)
+
+
+def read_record(handle, label):
+    rec = [handle.readline() for _ in range(4)]
+    if rec[0] == "":
+        if any(line != "" for line in rec[1:]):
+            raise RuntimeError("Truncated FASTQ record in {}".format(label))
+        return None
+    if any(line == "" for line in rec):
+        raise RuntimeError("Truncated FASTQ record in {}".format(label))
+    return rec
+
+
+def compress_fastq(path):
+    subprocess.run(gzip_cmd + [str(path)], check=True)
+    return Path(str(path) + ".gz")
+
+
+def run_cmd(cmd):
+    log("Running: " + cmd)
+    subprocess.run(["bash", "-o", "pipefail", "-c", cmd], check=True)
+
+
+def align_chunk(chunk_id, r1_gz, r2_gz=None):
+    bam = Path("chunk_bams") / "{}.{}.{}.sorted.bam".format(sample_id, pair_id, chunk_id)
+    tmp_prefix = Path("sort_tmp") / "{}.{}".format(pair_id, chunk_id)
+    rg = "@RG\\tID:{}.{}\\tSM:{}\\tPL:ILLUMINA\\tLB:{}".format(sample_id, pair_id, sample_id, sample_id)
+    inputs = [shlex.quote(str(r1_gz))]
+    if r2_gz is not None:
+        inputs.append(shlex.quote(str(r2_gz)))
+    cmd = (
+        "bwa mem -K 100000000 -v 3 -t {threads} -M -Y -R {rg} {ref} {inputs} | "
+        "samtools sort -@ {sort_threads} -m {sort_mem} -T {tmp} -o {bam} -"
+    ).format(
+        threads=shlex.quote(str(bwa_threads)),
+        rg=shlex.quote(rg),
+        ref=shlex.quote(ref_file),
+        inputs=" ".join(inputs),
+        sort_threads=shlex.quote(str(sort_threads)),
+        sort_mem=shlex.quote(str(sort_mem)),
+        tmp=shlex.quote(str(tmp_prefix)),
+        bam=shlex.quote(str(bam)),
+    )
+    run_cmd(cmd)
+    run_cmd("samtools index {}".format(shlex.quote(str(bam))))
+    run_cmd("samtools quickcheck -v {}".format(shlex.quote(str(bam))))
+    log("chunk {} BAM size: {} bytes".format(chunk_id, bam.stat().st_size))
+    if cleanup:
+        for fq in [r1_gz, r2_gz]:
+            if fq:
+                Path(fq).unlink(missing_ok=True)
+        for candidate in Path("sort_tmp").glob("{}.{}*".format(pair_id, chunk_id)):
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink(missing_ok=True)
+    subprocess.run(["du", "-sh", "."], check=False)
+    return bam
+
+
+def write_and_align_pe():
+    bams = []
+    chunk_index = 1
+    with gzip.open(r1_fastq, "rt") as r1, gzip.open(r2_fastq, "rt") as r2:
+        while True:
+            chunk_id = "chunk_{:06d}".format(chunk_index)
+            r1_path = Path("chunks") / "{}_R1.fastq".format(chunk_id)
+            r2_path = Path("chunks") / "{}_R2.fastq".format(chunk_id)
+            pairs = 0
+            log("chunk {} start".format(chunk_id))
+            with r1_path.open("wt") as r1_out, r2_path.open("wt") as r2_out:
+                for _ in range(chunk_reads):
+                    rec1 = read_record(r1, "R1")
+                    rec2 = read_record(r2, "R2")
+                    if rec1 is None and rec2 is None:
+                        break
+                    if rec1 is None or rec2 is None:
+                        raise RuntimeError("R1 and R2 have different record counts")
+                    r1_out.writelines(rec1)
+                    r2_out.writelines(rec2)
+                    pairs += 1
+            if pairs == 0:
+                r1_path.unlink(missing_ok=True)
+                r2_path.unlink(missing_ok=True)
+                break
+            log("chunk {} read pairs written: {}".format(chunk_id, pairs))
+            r1_gz = compress_fastq(r1_path)
+            r2_gz = compress_fastq(r2_path)
+            log("chunk {} FASTQ sizes: R1={} bytes R2={} bytes".format(chunk_id, r1_gz.stat().st_size, r2_gz.stat().st_size))
+            bams.append(align_chunk(chunk_id, r1_gz, r2_gz))
+            log("chunk {} end".format(chunk_id))
+            chunk_index += 1
+    return bams
+
+
+def write_and_align_se():
+    bams = []
+    chunk_index = 1
+    with gzip.open(r1_fastq, "rt") as r1:
+        while True:
+            chunk_id = "chunk_{:06d}".format(chunk_index)
+            chunk_path = Path("chunks") / "{}.fastq".format(chunk_id)
+            reads = 0
+            log("chunk {} start".format(chunk_id))
+            with chunk_path.open("wt") as out:
+                for _ in range(chunk_reads):
+                    rec = read_record(r1, "SE")
+                    if rec is None:
+                        break
+                    out.writelines(rec)
+                    reads += 1
+            if reads == 0:
+                chunk_path.unlink(missing_ok=True)
+                break
+            log("chunk {} reads written: {}".format(chunk_id, reads))
+            chunk_gz = compress_fastq(chunk_path)
+            log("chunk {} FASTQ size: {} bytes".format(chunk_id, chunk_gz.stat().st_size))
+            bams.append(align_chunk(chunk_id, chunk_gz))
+            log("chunk {} end".format(chunk_id))
+            chunk_index += 1
+    return bams
+
+if layout == "PE":
+    chunk_bams = write_and_align_pe()
+elif layout == "SE":
+    chunk_bams = write_and_align_se()
+else:
+    raise RuntimeError("Unsupported FASTQ layout: {}".format(layout))
+
+if not chunk_bams:
+    raise RuntimeError("No chunk BAMs produced")
+
+with open("chunk_bam.list", "wt") as out:
+    for bam in sorted(chunk_bams):
+        out.write(str(bam) + "\n")
+
+log("Merging {} chunk BAMs".format(len(chunk_bams)))
+run_cmd("samtools merge -@ {} -f -b chunk_bam.list merged.tmp.bam".format(shlex.quote(str(bwa_threads))))
+run_cmd("samtools index merged.tmp.bam")
+run_cmd("samtools quickcheck -v merged.tmp.bam")
+Path("merged.tmp.bam").replace("{}.{}.sorted.bam".format(sample_id, pair_id))
+Path("merged.tmp.bam.bai").replace("{}.{}.sorted.bam.bai".format(sample_id, pair_id))
+run_cmd("samtools quickcheck -v {}".format(shlex.quote("{}.{}.sorted.bam".format(sample_id, pair_id))))
+
+if cleanup:
+    shutil.rmtree("chunks", ignore_errors=True)
+    shutil.rmtree("sort_tmp", ignore_errors=True)
+    for path in Path("chunk_bams").glob("*.sorted.bam*"):
+        path.unlink(missing_ok=True)
+    Path("chunk_bam.list").unlink(missing_ok=True)
+    try:
+        Path("chunk_bams").rmdir()
+    except OSError:
+        pass
+PY_STREAM_ALIGN
+
+    trap - INT TERM HUP QUIT ERR
+    """
+}
+
 process SPLIT_FASTQ_CHUNKS {
     tag "${meta.id}.${meta.pair_id}"
     label 'alignment_related'
@@ -599,9 +842,18 @@ process SPLIT_FASTQ_CHUNKS {
         echo "INFO: FASTQ R2 size bytes: \$(stat -c%s '${r2}')"
     fi
 
+    if command -v pigz >/dev/null 2>&1; then
+        GZIP_CMD="pigz -p ${task.cpus}"
+    else
+        GZIP_CMD="gzip"
+    fi
+    export GZIP_CMD
+
+    echo "INFO: compression command: \${GZIP_CMD}"
+
     if [[ "${meta.layout}" == "PE" ]]; then
-        zcat "${r1}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='gzip -c > chunks/\${FILE}_R1.fastq.gz' - chunk_
-        zcat "${r2}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='gzip -c > chunks/\${FILE}_R2.fastq.gz' - chunk_
+        zcat "${r1}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='\${GZIP_CMD} > chunks/\${FILE}_R1.fastq.gz' - chunk_
+        zcat "${r2}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='\${GZIP_CMD} > chunks/\${FILE}_R2.fastq.gz' - chunk_
 
         for r1_chunk in chunks/chunk_*_R1.fastq.gz; do
             [[ -e "\${r1_chunk}" ]] || { echo "ERROR: No R1 chunks produced." >&2; exit 1; }
@@ -615,7 +867,7 @@ process SPLIT_FASTQ_CHUNKS {
             echo "\${chunk_id}" >> chunk_ids.txt
         done
     elif [[ "${meta.layout}" == "SE" ]]; then
-        zcat "${r1}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='gzip -c > chunks/\${FILE}.fastq.gz' - chunk_
+        zcat "${r1}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='\${GZIP_CMD} > chunks/\${FILE}.fastq.gz' - chunk_
 
         for chunk in chunks/chunk_*.fastq.gz; do
             [[ -e "\${chunk}" ]] || { echo "ERROR: No SE chunks produced." >&2; exit 1; }
