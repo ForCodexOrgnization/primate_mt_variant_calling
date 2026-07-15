@@ -658,7 +658,19 @@ def run_cmd(cmd):
 def align_chunk(chunk_id, r1_gz, r2_gz=None):
     bam = Path("chunk_bams") / "{}.{}.{}.sorted.bam".format(sample_id, pair_id, chunk_id)
     tmp_prefix = Path("sort_tmp") / "{}.{}".format(pair_id, chunk_id)
-    rg = "@RG\\tID:{}.{}\\tSM:{}\\tPL:ILLUMINA\\tLB:{}".format(sample_id, pair_id, sample_id, sample_id)
+    bs = chr(92)
+    rg = (
+        "@RG"
+        + bs + "tID:" + sample_id + "." + pair_id
+        + bs + "tSM:" + sample_id
+        + bs + "tPL:ILLUMINA"
+        + bs + "tLB:" + sample_id
+    )
+    if "\t" in rg:
+        raise RuntimeError("RG string contains literal tab characters; expected escaped backslash-t sequences")
+    if "\\t" not in rg:
+        raise RuntimeError("RG string does not contain escaped tab sequences")
+    log("BWA RG string: " + rg)
     inputs = [shlex.quote(str(r1_gz))]
     if r2_gz is not None:
         inputs.append(shlex.quote(str(r2_gz)))
