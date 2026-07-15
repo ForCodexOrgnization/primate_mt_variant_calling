@@ -5,6 +5,22 @@ if (!params.containsKey('skip_existing_cram') || params.skip_existing_cram == nu
     params.skip_existing_cram = true
 }
 
+if (!params.containsKey('enable_chunked_alignment') || params.enable_chunked_alignment == null) {
+    params.enable_chunked_alignment = true
+}
+if (!params.containsKey('chunked_alignment_size_threshold_gb') || params.chunked_alignment_size_threshold_gb == null) {
+    params.chunked_alignment_size_threshold_gb = 20
+}
+if (!params.containsKey('fastq_chunk_reads') || params.fastq_chunk_reads == null) {
+    params.fastq_chunk_reads = 5000000
+}
+if (!params.containsKey('align_sort_threads') || params.align_sort_threads == null) {
+    params.align_sort_threads = 4
+}
+if (!params.containsKey('align_sort_mem_per_thread') || params.align_sort_mem_per_thread == null) {
+    params.align_sort_mem_per_thread = '2G'
+}
+
 def existingCramIsComplete = { String sampleId ->
     def cram = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram")
     def crai = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram.crai")
@@ -38,6 +54,9 @@ Sample TSV          : ${params.sample_tsv}
 Output Directory    : ${params.outdir}
 Reference Directory : ${params.global_ref_dir}
 Skip existing CRAM  : ${params.skip_existing_cram}
+Chunked alignment   : ${params.enable_chunked_alignment}
+Chunk threshold GB  : ${params.chunked_alignment_size_threshold_gb}
+FASTQ chunk reads   : ${params.fastq_chunk_reads}
 ======================================
 """
 
@@ -123,11 +142,73 @@ workflow {
             tuple(meta, row.species_name, row.ref_name, reads)
         }
 
-    // 第三步：比对并排序
-    ALIGN_AND_SORT(ch_fastq_pairs)
+    // 第三步：根据 FASTQ 总大小路由到常规比对或分块比对
+    ch_fastq_alignment_routes = ch_fastq_pairs
+        .map { meta, species_name, ref_name, reads ->
+            long total_fastq_bytes = reads.collect { it.size() }.sum() as long
+            double total_fastq_size_gb = total_fastq_bytes / 1024.0 / 1024.0 / 1024.0
+            boolean use_chunked = params.enable_chunked_alignment && total_fastq_size_gb >= (params.chunked_alignment_size_threshold_gb as double)
+            def routed_meta = meta + [
+                total_fastq_size_gb: total_fastq_size_gb,
+                use_chunked_alignment: use_chunked
+            ]
+            log.info String.format(
+                "FASTQ sizing: sample=%s run=%s layout=%s total_fastq_size_gb=%.3f threshold_gb=%s chunked_enabled=%s route=%s",
+                meta.id,
+                meta.pair_id,
+                meta.layout,
+                total_fastq_size_gb,
+                params.chunked_alignment_size_threshold_gb,
+                params.enable_chunked_alignment,
+                use_chunked ? 'chunked' : 'standard'
+            )
+            tuple(routed_meta, species_name, ref_name, reads)
+        }
+        .branch { meta, species_name, ref_name, reads ->
+            chunked: meta.use_chunked_alignment
+            standard: true
+        }
+
+    ALIGN_AND_SORT(ch_fastq_alignment_routes.standard)
+
+    SPLIT_FASTQ_CHUNKS(ch_fastq_alignment_routes.chunked)
+
+    ch_fastq_chunks = SPLIT_FASTQ_CHUNKS.out.chunks_tsv
+        .splitCsv(header: true, sep: '\t')
+        .map { row ->
+            def meta = [
+                id       : row.sample_id,
+                pair_id  : row.run_id,
+                layout   : row.layout,
+                n_pairs  : row.expected_pairs.toInteger(),
+                chunk_id : row.chunk_id,
+                n_chunks : row.expected_chunks.toInteger()
+            ]
+            def reads = row.layout == 'PE' ? [ file(row.r1), file(row.r2) ] : [ file(row.r1) ]
+            tuple(meta, row.species_name, row.ref_name, reads)
+        }
+
+    ALIGN_AND_SORT_CHUNK(ch_fastq_chunks)
+
+    ch_chunk_bam_grouped = ALIGN_AND_SORT_CHUNK.out.bam
+        .map { meta, species, ref_name, bam, bai ->
+            tuple(groupKey("${meta.id}::${meta.pair_id}", meta.n_chunks), meta, species, ref_name, bam)
+        }
+        .groupTuple()
+        .map { gKey, metas, species_list, refs, bams ->
+            def meta = metas[0]
+            if (bams.size() != meta.n_chunks) {
+                error "CRITICAL: Run ${meta.id}.${meta.pair_id} missing chunks. Expected ${meta.n_chunks}, got ${bams.size()}."
+            }
+            tuple(meta, species_list[0], refs[0], bams)
+        }
+
+    MERGE_RUN_CHUNK_BAMS(ch_chunk_bam_grouped)
+
+    ch_per_run_bams = ALIGN_AND_SORT.out.bam.mix(MERGE_RUN_CHUNK_BAMS.out.bam)
 
     // 第四步：按 Sample ID 分组，并强制校验数量
-    ch_bam_grouped = ALIGN_AND_SORT.out.bam
+    ch_bam_grouped = ch_per_run_bams
         .map { meta, species, ref_name, bam, bai ->
             // groupKey 确保收齐 n_pairs 个文件后才下发到下游
             tuple(groupKey(meta.id, meta.n_pairs), meta, species, ref_name, bam)
@@ -469,6 +550,215 @@ process ALIGN_AND_SORT {
 
     # 成功完成后清理临时目录
     rm -rf "\${TMP_DIR}"
+
+    trap - INT TERM HUP QUIT ERR
+    """
+}
+
+process SPLIT_FASTQ_CHUNKS {
+    tag "${meta.id}.${meta.pair_id}"
+    label 'alignment_related'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(reads)
+
+    output:
+    path "chunks.tsv", emit: chunks_tsv
+    path "chunks/*.fastq.gz", emit: chunk_fastqs
+
+    script:
+    def chunk_lines = (params.fastq_chunk_reads as long) * 4L
+    def r1 = reads[0]
+    def r2 = meta.layout == 'PE' ? reads[1] : null
+    """
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+
+    cleanup_split_outputs() {
+        echo "WARN: SPLIT_FASTQ_CHUNKS interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial chunks." >&2
+        rm -rf chunks chunks.tsv chunk_ids.txt
+    }
+
+    trap cleanup_split_outputs INT TERM HUP QUIT ERR
+
+    rm -rf chunks chunks.tsv chunk_ids.txt
+    mkdir -p chunks
+
+    echo "INFO: SPLIT_FASTQ_CHUNKS diagnostics for ${meta.id}.${meta.pair_id}"
+    echo "INFO: SLURM_JOB_ID=\${SLURM_JOB_ID:-}"
+    echo "INFO: HOSTNAME=\$(hostname)"
+    df -h .
+    df -ih .
+    ulimit -a
+    echo "INFO: Chunked alignment enabled: ${params.enable_chunked_alignment}"
+    echo "INFO: FASTQ size threshold GB: ${params.chunked_alignment_size_threshold_gb}"
+    echo "INFO: Total FASTQ size GB: ${meta.total_fastq_size_gb}"
+    echo "INFO: Requested reads per chunk: ${params.fastq_chunk_reads}"
+    echo "INFO: Lines per chunk: ${chunk_lines}"
+    echo "INFO: FASTQ R1 size bytes: \$(stat -c%s '${r1}')"
+    if [[ "${meta.layout}" == "PE" ]]; then
+        echo "INFO: FASTQ R2 size bytes: \$(stat -c%s '${r2}')"
+    fi
+
+    if [[ "${meta.layout}" == "PE" ]]; then
+        zcat "${r1}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='gzip -c > chunks/\${FILE}_R1.fastq.gz' - chunk_
+        zcat "${r2}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='gzip -c > chunks/\${FILE}_R2.fastq.gz' - chunk_
+
+        for r1_chunk in chunks/chunk_*_R1.fastq.gz; do
+            [[ -e "\${r1_chunk}" ]] || { echo "ERROR: No R1 chunks produced." >&2; exit 1; }
+            chunk_id=\$(basename "\${r1_chunk}" _R1.fastq.gz)
+            r2_chunk="chunks/\${chunk_id}_R2.fastq.gz"
+            if [[ ! -s "\${r2_chunk}" ]]; then
+                echo "ERROR: Missing paired R2 chunk for \${chunk_id}" >&2
+                exit 1
+            fi
+            gzip -t "\${r1_chunk}" "\${r2_chunk}"
+            echo "\${chunk_id}" >> chunk_ids.txt
+        done
+    elif [[ "${meta.layout}" == "SE" ]]; then
+        zcat "${r1}" | split -d -a 6 --numeric-suffixes=1 -l ${chunk_lines} --filter='gzip -c > chunks/\${FILE}.fastq.gz' - chunk_
+
+        for chunk in chunks/chunk_*.fastq.gz; do
+            [[ -e "\${chunk}" ]] || { echo "ERROR: No SE chunks produced." >&2; exit 1; }
+            chunk_id=\$(basename "\${chunk}" .fastq.gz)
+            gzip -t "\${chunk}"
+            echo "\${chunk_id}" >> chunk_ids.txt
+        done
+    else
+        echo "ERROR: Unsupported FASTQ layout: ${meta.layout}" >&2
+        exit 1
+    fi
+
+    sort -u chunk_ids.txt -o chunk_ids.txt
+    expected_chunks=\$(wc -l < chunk_ids.txt | awk '{print \$1}')
+    echo "INFO: Number of chunks: \${expected_chunks}"
+    echo "INFO: Chunk IDs: \$(paste -sd, chunk_ids.txt)"
+
+    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tlayout\\tchunk_id\\tr1\\tr2\\texpected_chunks\\texpected_pairs" > chunks.tsv
+    while read -r chunk_id; do
+        if [[ "${meta.layout}" == "PE" ]]; then
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}_R1.fastq.gz\\t\$PWD/chunks/\${chunk_id}_R2.fastq.gz\\t\${expected_chunks}\\t${meta.n_pairs}" >> chunks.tsv
+        else
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}.fastq.gz\\t.\\t\${expected_chunks}\\t${meta.n_pairs}" >> chunks.tsv
+        fi
+    done < chunk_ids.txt
+
+    trap - INT TERM HUP QUIT ERR
+    """
+}
+
+process ALIGN_AND_SORT_CHUNK {
+    tag "${meta.id}.${meta.pair_id}.${meta.chunk_id}"
+    label 'alignment_related'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(reads)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.${meta.pair_id}.${meta.chunk_id}.sorted.bam"), path("${meta.id}.${meta.pair_id}.${meta.chunk_id}.sorted.bam.bai"), emit: bam
+
+    script:
+    def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
+    def bam_output = "${meta.id}.${meta.pair_id}.${meta.chunk_id}.sorted.bam"
+    def bwa_inputs = meta.layout == 'PE' ? "\"${reads[0]}\" \"${reads[1]}\"" : "\"${reads[0]}\""
+    """
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+
+    cleanup_chunk_alignment_outputs() {
+        echo "WARN: ALIGN_AND_SORT_CHUNK interrupted or failed for ${meta.id}.${meta.pair_id}.${meta.chunk_id}; removing partial BAM outputs." >&2
+        rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
+        rm -rf "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+    }
+
+    trap cleanup_chunk_alignment_outputs INT TERM HUP QUIT ERR
+
+    rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
+    rm -rf "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+
+    echo "INFO: ALIGN_AND_SORT_CHUNK diagnostics for ${meta.id}.${meta.pair_id}.${meta.chunk_id}"
+    echo "INFO: SLURM_JOB_ID=\${SLURM_JOB_ID:-}"
+    echo "INFO: HOSTNAME=\$(hostname)"
+    df -h .
+    df -ih .
+    ulimit -a
+    echo "INFO: FASTQ layout: ${meta.layout}"
+    echo "INFO: Chunk ID: ${meta.chunk_id}"
+    echo "INFO: Expected chunks for run: ${meta.n_chunks}"
+
+    if [[ "${meta.layout}" == "PE" ]]; then
+        gzip -t "${reads[0]}" "${reads[1]}"
+    else
+        gzip -t "${reads[0]}"
+    fi
+
+    for ext in amb ann bwt pac sa; do
+        [[ -s "${ref_file}.\${ext}" ]] || { echo "ERROR: Missing BWA index: ${ref_file}.\${ext}" >&2; exit 1; }
+    done
+    [[ -s "${ref_file}.fai" ]] || { echo "ERROR: Missing samtools faidx: ${ref_file}.fai" >&2; exit 1; }
+
+    mkdir -p "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+
+    bwa mem -K 100000000 -v 3 -t ${task.cpus} -M -Y \\
+      -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
+      "${ref_file}" ${bwa_inputs} | \\
+    samtools sort -@ ${params.align_sort_threads} -m ${params.align_sort_mem_per_thread} \\
+      -T "tmp_sort_${meta.pair_id}_${meta.chunk_id}/sort_prefix" \\
+      -o "${bam_output}" -
+
+    samtools index -@ ${task.cpus} "${bam_output}"
+    samtools quickcheck "${bam_output}"
+    rm -rf "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+
+    trap - INT TERM HUP QUIT ERR
+    """
+}
+
+process MERGE_RUN_CHUNK_BAMS {
+    tag "${meta.id}.${meta.pair_id}"
+    label 'merge_related'
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), path(bams)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.${meta.pair_id}.sorted.bam"), path("${meta.id}.${meta.pair_id}.sorted.bam.bai"), emit: bam
+
+    script:
+    def bam_list = bams.join(' ')
+    def merged_name = "${meta.id}.${meta.pair_id}.sorted.bam"
+    def tmp_name = "${meta.id}.${meta.pair_id}.merged.tmp.bam"
+    """
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+
+    cleanup_run_merge_outputs() {
+        echo "WARN: MERGE_RUN_CHUNK_BAMS interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial outputs." >&2
+        rm -f "${tmp_name}" "${tmp_name}.bai" "${tmp_name}.csi"
+        rm -f "${merged_name}" "${merged_name}.bai" "${merged_name}.csi"
+    }
+
+    trap cleanup_run_merge_outputs INT TERM HUP QUIT ERR
+
+    rm -f "${tmp_name}" "${tmp_name}.bai" "${tmp_name}.csi"
+    rm -f "${merged_name}" "${merged_name}.bai" "${merged_name}.csi"
+
+    echo "INFO: MERGE_RUN_CHUNK_BAMS diagnostics for ${meta.id}.${meta.pair_id}"
+    echo "INFO: SLURM_JOB_ID=\${SLURM_JOB_ID:-}"
+    echo "INFO: HOSTNAME=\$(hostname)"
+    df -h .
+    df -ih .
+    ulimit -a
+    echo "INFO: Number of chunk BAMs: ${bams.size()}"
+    echo "INFO: Chunk BAMs: ${bam_list}"
+
+    samtools merge -@ ${task.cpus} -f "${tmp_name}" ${bam_list}
+    samtools index -@ ${task.cpus} "${tmp_name}"
+    samtools quickcheck "${tmp_name}"
+
+    mv "${tmp_name}" "${merged_name}"
+    mv "${tmp_name}.bai" "${merged_name}.bai"
+    samtools quickcheck "${merged_name}"
 
     trap - INT TERM HUP QUIT ERR
     """
