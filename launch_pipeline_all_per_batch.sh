@@ -192,6 +192,11 @@ run_numt_nextflow() {
     log "  nextflow=$(command -v nextflow)"
     nextflow -version
 
+    log "Removing stale NUMT Nextflow metadata files for ${batch_id}"
+    rm -f "${numt_batch_dir}/nextflow.trace.tsv" \
+          "${numt_batch_dir}/nextflow.report.html" \
+          "${numt_batch_dir}/nextflow.timeline.html"
+
     NXF_OPTS="${NXF_OPTS:-}" nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_LAUNCH_SCRIPT}" \
         -profile cluster \
         -work-dir "${numt_batch_work_dir}" \
