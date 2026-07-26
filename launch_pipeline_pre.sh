@@ -39,6 +39,8 @@ if [ -n "${BATCH_FILE:-}" ]; then
 
     echo "INFO: Processing fixed batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
+    echo "INFO: ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT:-true}"
+    echo "INFO: Effective Nextflow config: $(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)"
 
     nextflow run "${SUBMIT_DIR}/preprocessing.nf" \
         -c "$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)" \
@@ -46,7 +48,8 @@ if [ -n "${BATCH_FILE:-}" ]; then
         -resume \
         -w "${WORK_DIR}" \
         --sample_tsv "${BATCH_FILE}" \
-        --outdir "${OUTPUT_DIR}"
+        --outdir "${OUTPUT_DIR}" \
+        --enable_chunked_alignment "${ENABLE_CHUNKED_ALIGNMENT:-true}"
 
     echo "BATCH_FILE mode completed successfully for ${BATCH_FILE}"
     cd "${SUBMIT_DIR}"
@@ -122,6 +125,8 @@ else
 
     echo "INFO: This task will process batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
+    echo "INFO: ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT:-true}"
+    echo "INFO: Effective Nextflow config: $(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)"
 
     set +e
     nextflow run "${SUBMIT_DIR}/preprocessing.nf" \
@@ -130,7 +135,8 @@ else
         -resume \
         -w "${WORK_DIR}" \
         --sample_tsv "${BATCH_FILE}" \
-        --outdir "${OUTPUT_DIR}"
+        --outdir "${OUTPUT_DIR}" \
+        --enable_chunked_alignment "${ENABLE_CHUNKED_ALIGNMENT:-true}"
 
     NF_EXIT=$?
     set -e

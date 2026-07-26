@@ -151,19 +151,21 @@ workflow {
             long total_fastq_bytes = reads.collect { it.size() }.sum() as long
             double total_fastq_size_gb = total_fastq_bytes / 1024.0 / 1024.0 / 1024.0
             boolean use_chunked = params.enable_chunked_alignment && total_fastq_size_gb >= (params.chunked_alignment_size_threshold_gb as double)
+            String route_reason = !params.enable_chunked_alignment ? 'user_disabled' : (use_chunked ? 'above_threshold' : 'below_threshold')
             def routed_meta = meta + [
                 total_fastq_size_gb: total_fastq_size_gb,
                 use_chunked_alignment: use_chunked
             ]
             log.info String.format(
-                "FASTQ sizing: sample=%s run=%s layout=%s total_fastq_size_gb=%.3f threshold_gb=%s chunked_enabled=%s route=%s",
+                "FASTQ sizing: sample=%s run=%s layout=%s total_fastq_size_gb=%.3f threshold_gb=%s chunked_enabled=%s route=%s reason=%s",
                 meta.id,
                 meta.pair_id,
                 meta.layout,
                 total_fastq_size_gb,
                 params.chunked_alignment_size_threshold_gb,
                 params.enable_chunked_alignment,
-                use_chunked ? 'chunked' : 'standard'
+                use_chunked ? 'chunked' : 'standard',
+                route_reason
             )
             tuple(routed_meta, species_name, ref_name, reads)
         }
