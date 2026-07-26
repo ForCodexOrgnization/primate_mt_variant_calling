@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -88,6 +89,53 @@ class ValidateCramTests(unittest.TestCase):
         validation = source.index("def validation = validateExistingCram", force)
         self.assertLess(force, validation)
         self.assertIn("reason=user_forced", source[force:validation])
+
+    def test_coordinator_command_arguments_are_converted_to_strings(self):
+        source = (Path(__file__).parents[1] / "preprocessing.nf").read_text()
+        self.assertIn("def runCommand = { List command ->", source)
+        self.assertIn("def stringCommand = command.collect", source)
+        self.assertIn("new ProcessBuilder(stringCommand)", source)
+        self.assertIn("assert command.every { it instanceof String }", source)
+
+    @unittest.skipUnless(shutil.which("nextflow"), "Nextflow is not installed")
+    def test_nextflow_coordinator_starts_cram_validator(self):
+        root = Path(self.tmp.name)
+        sample = "coordinator_test"
+        alignment = root / "out" / sample / "alignment"
+        alignment.mkdir(parents=True)
+        cram = alignment / f"{sample}.cram"
+        crai = alignment / f"{sample}.cram.crai"
+        cram.write_bytes(b"C" * 2048)
+        crai.write_bytes(b"I" * 32)
+        reference_dir = root / "references"
+        reference_dir.mkdir()
+        reference = reference_dir / "test_ref.fa"
+        reference.write_text(">chrM\nA\n")
+        Path(str(reference) + ".fai").write_text("chrM\t1\t6\t1\t2\n")
+        samples = root / "samples.tsv"
+        samples.write_text(f"{sample}\ttest_species\ttest_ref\n")
+        invoked = root / "samtools-invoked"
+        samtools = self.mock(
+            f'touch "{invoked}"; exit 0',
+            f'touch "{invoked}"; exit 0',
+        )
+
+        result = subprocess.run(
+            [
+                shutil.which("nextflow"), "run", str(Path(__file__).parents[1] / "preprocessing.nf"),
+                "--sample_tsv", str(samples), "--outdir", str(root / "out"),
+                "--global_ref_dir", str(reference_dir), "--samtools_bin", str(samtools),
+                "--existing_cram_check_retries", "1", "--existing_cram_quickcheck_retries", "1",
+                "--existing_cram_quickcheck_delay_seconds", "0",
+            ],
+            cwd=root, text=True, capture_output=True,
+        )
+
+        diagnostics = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostics)
+        self.assertTrue(invoked.exists(), diagnostics)
+        self.assertNotIn("ArrayStoreException", diagnostics)
+        self.assertIn("status=COMPLETE", diagnostics)
 
     def test_growing_cram_is_unknown(self):
         grower = subprocess.Popen(["bash", "-c", f'for i in {{1..15}}; do printf X >> "{self.cram}"; sleep .2; done'])
