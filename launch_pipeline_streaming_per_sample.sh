@@ -154,6 +154,7 @@ fi
 
 validate_file_nonempty "${CRAM_PATH}"
 validate_file_nonempty "${CRAI_PATH}"
+samtools quickcheck "${CRAM_PATH}" || fail "samtools quickcheck failed for ${CRAM_PATH}; retaining ${PRE_WORK_DIR}"
 log "Preprocessing validation passed for ${SAMPLE_ID}"
 log "Deleting preprocessing Nextflow work directory for ${SAMPLE_ID} after CRAM/CRAI validation: ${PRE_WORK_DIR}"
 rm -rf "${PRE_WORK_DIR}"

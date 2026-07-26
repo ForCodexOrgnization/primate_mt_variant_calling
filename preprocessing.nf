@@ -15,7 +15,7 @@ if (!params.containsKey('fastq_chunk_reads') || params.fastq_chunk_reads == null
     params.fastq_chunk_reads = 25000000
 }
 if (!params.containsKey('cleanup_chunk_intermediates') || params.cleanup_chunk_intermediates == null) {
-    params.cleanup_chunk_intermediates = true
+    params.cleanup_chunk_intermediates = false
 }
 if (!params.containsKey('align_sort_threads') || params.align_sort_threads == null) {
     params.align_sort_threads = 4
@@ -176,9 +176,47 @@ workflow {
 
     ALIGN_AND_SORT(ch_fastq_alignment_routes.standard)
 
-    ALIGN_LARGE_FASTQ_STREAMING_CHUNKS(ch_fastq_alignment_routes.chunked)
+    // Make each large-run chunk an independently cached Nextflow task. The old
+    // streaming process remains below only as a deprecated manual fallback.
+    SPLIT_FASTQ_CHUNKS(ch_fastq_alignment_routes.chunked)
 
-    ch_per_run_bams = ALIGN_AND_SORT.out.bam.mix(ALIGN_LARGE_FASTQ_STREAMING_CHUNKS.out.bam)
+    ch_alignment_chunks = SPLIT_FASTQ_CHUNKS.out.chunks_tsv
+        .splitCsv(header: true, sep: '\t')
+        .map { row ->
+            def meta = [
+                id       : row.sample_id,
+                pair_id  : row.run_id,
+                layout   : row.layout,
+                chunk_id : row.chunk_id,
+                n_chunks : row.expected_chunks.toInteger(),
+                n_pairs  : row.expected_pairs.toInteger()
+            ]
+            def reads = row.layout == 'PE' ? [file(row.r1), file(row.r2)] : [file(row.r1)]
+            tuple(meta, row.species_name, row.ref_name, reads)
+        }
+
+    ALIGN_AND_SORT_CHUNK(ch_alignment_chunks)
+
+    ch_run_chunk_bams = ALIGN_AND_SORT_CHUNK.out.bam
+        .map { meta, species_name, ref_name, bam, bai ->
+            tuple(groupKey([sample_id: meta.id, pair_id: meta.pair_id], meta.n_chunks),
+                  meta, species_name, ref_name, bam)
+        }
+        .groupTuple()
+        .map { run_key, metas, species_names, ref_names, bams ->
+            def meta = metas[0]
+            if (bams.size() != meta.n_chunks) {
+                error "Missing chunk BAMs for ${meta.id}.${meta.pair_id}: expected ${meta.n_chunks}, received ${bams.size()}"
+            }
+            if (metas.any { it.n_chunks != meta.n_chunks || it.n_pairs != meta.n_pairs }) {
+                error "Inconsistent chunk metadata for ${meta.id}.${meta.pair_id}"
+            }
+            tuple(meta, species_names[0], ref_names[0], bams.sort { it.name })
+        }
+
+    MERGE_RUN_CHUNK_BAMS(ch_run_chunk_bams)
+
+    ch_per_run_bams = ALIGN_AND_SORT.out.bam.mix(MERGE_RUN_CHUNK_BAMS.out.bam)
 
     // 第四步：按 Sample ID 分组，并强制校验数量
     ch_bam_grouped = ch_per_run_bams
@@ -931,13 +969,13 @@ process ALIGN_AND_SORT_CHUNK {
     cleanup_chunk_alignment_outputs() {
         echo "WARN: ALIGN_AND_SORT_CHUNK interrupted or failed for ${meta.id}.${meta.pair_id}.${meta.chunk_id}; removing partial BAM outputs." >&2
         rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
-        rm -rf "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+        rm -rf "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}"
     }
 
     trap cleanup_chunk_alignment_outputs INT TERM HUP QUIT ERR
 
     rm -f "${bam_output}" "${bam_output}.bai" "${bam_output}.csi"
-    rm -rf "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+    rm -rf "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}"
 
     echo "INFO: ALIGN_AND_SORT_CHUNK diagnostics for ${meta.id}.${meta.pair_id}.${meta.chunk_id}"
     echo "INFO: SLURM_JOB_ID=\${SLURM_JOB_ID:-}"
@@ -960,18 +998,18 @@ process ALIGN_AND_SORT_CHUNK {
     done
     [[ -s "${ref_file}.fai" ]] || { echo "ERROR: Missing samtools faidx: ${ref_file}.fai" >&2; exit 1; }
 
-    mkdir -p "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+    mkdir -p "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}"
 
     bwa mem -K 100000000 -v 3 -t ${task.cpus} -M -Y \\
       -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
       "${ref_file}" ${bwa_inputs} | \\
     samtools sort -@ ${params.align_sort_threads} -m ${params.align_sort_mem_per_thread} \\
-      -T "tmp_sort_${meta.pair_id}_${meta.chunk_id}/sort_prefix" \\
+      -T "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}/sort_prefix" \\
       -o "${bam_output}" -
 
     samtools index -@ ${task.cpus} "${bam_output}"
     samtools quickcheck "${bam_output}"
-    rm -rf "tmp_sort_${meta.pair_id}_${meta.chunk_id}"
+    rm -rf "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}"
 
     trap - INT TERM HUP QUIT ERR
     """
@@ -1015,7 +1053,15 @@ process MERGE_RUN_CHUNK_BAMS {
     echo "INFO: Number of chunk BAMs: ${bams.size()}"
     echo "INFO: Chunk BAMs: ${bam_list}"
 
-    samtools merge -@ ${task.cpus} -f "${tmp_name}" ${bam_list}
+    if [[ ${bams.size()} -ne ${meta.n_chunks} ]]; then
+        echo "ERROR: expected ${meta.n_chunks} chunk BAMs but received ${bams.size()}" >&2
+        exit 1
+    fi
+    printf '%s\n' ${bam_list} > chunk_bams.list
+    echo "INFO: Ordered chunk BAM list:"
+    cat chunk_bams.list
+
+    samtools merge -@ ${task.cpus} -f -b chunk_bams.list "${tmp_name}"
     samtools index -@ ${task.cpus} "${tmp_name}"
     samtools quickcheck "${tmp_name}"
 
