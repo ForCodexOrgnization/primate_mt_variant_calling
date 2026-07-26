@@ -44,7 +44,7 @@ LOG_DIR="${LOG_DIR:-log_all_per_batch}"
 BATCH_LIST_DIR="${BATCH_LIST_DIR:-${NF_BASE_WORK_DIR}/batch_lists}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
-ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-false}"
+ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-true}"
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
