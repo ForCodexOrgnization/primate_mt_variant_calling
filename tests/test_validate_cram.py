@@ -52,6 +52,59 @@ class ValidateCramTests(unittest.TestCase):
     def test_legacy_without_marker(self):
         self.assertEqual(self.run_validator(self.mock()).returncode, 0)
 
+    def test_samtools_1_21_idxstats_uses_cram_reference_input_option(self):
+        args_file = Path(self.tmp.name) / "idxstats-args"
+        samtools = Path(self.tmp.name) / "samtools-1.21"
+        samtools.write_text(textwrap.dedent(f"""\
+            #!/bin/bash
+            case "$1" in
+              --version) echo 'samtools 1.21'; exit 0;;
+              quickcheck) exit 0;;
+              idxstats)
+                printf '%s\\n' "$@" > "{args_file}"
+                [[ "$2" == --input-fmt-option ]] || exit 10
+                [[ "$3" == "reference={self.ref}" ]] || exit 11
+                [[ "$4" == "{self.cram}" ]] || exit 12
+                [[ $# == 4 ]] || exit 13
+                exit 0;;
+            esac
+        """))
+        samtools.chmod(0o755)
+
+        result = self.run_validator(samtools)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("STATUS=COMPLETE", result.stdout)
+        self.assertIn("REASON=quickcheck_and_idxstats_passed", result.stdout)
+        self.assertRegex(result.stderr, r"QUICKCHECK_ATTEMPT=1/3 EXIT=0")
+        self.assertIn("IDXSTATS_EXIT=0", result.stderr)
+        self.assertEqual(args_file.read_text().splitlines(), [
+            "idxstats", "--input-fmt-option", f"reference={self.ref}", str(self.cram),
+        ])
+
+    def test_idxstats_usage_error_reports_invalid_command(self):
+        result = self.run_validator(self.mock(
+            idxstats='echo "Usage: samtools idxstats [options] <in.bam>" >&2; exit 1',
+        ))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("STATUS=UNKNOWN", result.stdout)
+        self.assertIn("REASON=idxstats_command_invalid", result.stdout)
+
+    def test_idxstats_read_failure_remains_unknown(self):
+        result = self.run_validator(self.mock(
+            idxstats='echo "failed to read index" >&2; exit 1',
+        ))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("STATUS=UNKNOWN", result.stdout)
+        self.assertIn("REASON=idxstats_failed", result.stdout)
+
+    def test_missing_reference_fai_is_unknown(self):
+        Path(str(self.ref) + ".fai").unlink()
+        result = self.run_validator(self.mock())
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("STATUS=UNKNOWN", result.stdout)
+        self.assertIn("REASON=reference_or_fai_unavailable", result.stdout)
+
     def test_samtools_missing_is_unknown(self):
         result = self.run_validator("/does/not/exist")
         self.assertEqual(result.returncode, 2); self.assertIn("samtools_unavailable", result.stdout)
