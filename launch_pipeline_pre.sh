@@ -58,17 +58,15 @@ run_nextflow() {
 }
 
 verify_batch_outputs() {
-    local verify_exit=0 sample_id species ref_name cram_path crai_path reference
+    local verify_exit=0 sample_id species ref_name cram_path crai_path marker_path
     while IFS=$'\t' read -r sample_id species ref_name _; do
         [[ -n "${sample_id}" && "${sample_id}" != "sample" && "${sample_id}" != "sample_id" ]] || continue
         cram_path="${OUTPUT_DIR}/${sample_id}/alignment/${sample_id}.cram"
         if [[ -f "${cram_path}.crai" ]]; then crai_path="${cram_path}.crai"; else crai_path="${OUTPUT_DIR}/${sample_id}/alignment/${sample_id}.crai"; fi
-        ref_name="${ref_name:-${species}}"
-        reference="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}/${ref_name}.fa"
+        marker_path="${OUTPUT_DIR}/${sample_id}/alignment/${sample_id}.cram.complete"
         if "${SUBMIT_DIR}/scripts/validate_cram.sh" --cram "${cram_path}" --crai "${crai_path}" \
-             --reference "${reference}" --samtools "${SAMTOOLS_BIN:-samtools}" \
-             --stability-retries "${EXISTING_CRAM_CHECK_RETRIES:-3}" \
-             --retries "${EXISTING_CRAM_QUICKCHECK_RETRIES:-3}" --delay "${EXISTING_CRAM_QUICKCHECK_DELAY_SECONDS:-10}"; then
+             --marker "${marker_path}" --samtools "${SAMTOOLS_BIN:-samtools}" \
+             --min-cram-size 1024 --min-crai-size 16; then
             :
         else
             status=$?

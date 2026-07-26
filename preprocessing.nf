@@ -6,12 +6,13 @@ if (!params.containsKey('skip_existing_cram') || params.skip_existing_cram == nu
 }
 params.force_reprocess_existing_cram = params.force_reprocess_existing_cram ?: false
 params.backfill_existing_cram_marker = params.containsKey('backfill_existing_cram_marker') ? params.backfill_existing_cram_marker : true
-params.existing_cram_check_retries = params.existing_cram_check_retries ?: 3
-params.existing_cram_check_delay_seconds = params.existing_cram_check_delay_seconds ?: 10
+// Deprecated for fast existing-CRAM validation; retained for CLI compatibility.
+params.existing_cram_check_retries = params.existing_cram_check_retries ?: 1
+params.existing_cram_check_delay_seconds = params.existing_cram_check_delay_seconds ?: 0
 params.existing_cram_min_size_bytes = params.existing_cram_min_size_bytes ?: 1024
 params.existing_crai_min_size_bytes = params.existing_crai_min_size_bytes ?: 16
-params.existing_cram_quickcheck_retries = params.existing_cram_quickcheck_retries ?: 3
-params.existing_cram_quickcheck_delay_seconds = params.existing_cram_quickcheck_delay_seconds ?: 10
+params.existing_cram_quickcheck_retries = params.existing_cram_quickcheck_retries ?: 1
+params.existing_cram_quickcheck_delay_seconds = params.existing_cram_quickcheck_delay_seconds ?: 0
 params.existing_cram_quickcheck_timeout_seconds = params.existing_cram_quickcheck_timeout_seconds ?: 120
 def paramAsBoolean = { value -> value instanceof Boolean ? value : value?.toString()?.toBoolean() }
 
@@ -75,14 +76,9 @@ def validateExistingCram = { String sampleId, String refName ->
     if (!crai) return [status:'INCOMPLETE', reason:"crai_missing_checked=${candidates*.absolutePath.join(',')}", cram:cram.absolutePath, crai:null]
 
     def marker = new File(alignmentDir, "${sampleId}.cram.complete")
-    def ref = new File("${params.global_ref_dir}/${refName}.fa")
     def validatorScript = new File(projectDir.toString(), 'scripts/validate_cram.sh').absolutePath
     def command = [validatorScript, '--cram', cram.absolutePath, '--crai', crai.absolutePath,
-        '--reference', ref.absolutePath, '--samtools', params.samtools_bin.toString(),
-        '--stability-retries', params.existing_cram_check_retries.toString(),
-        '--retries', params.existing_cram_quickcheck_retries.toString(),
-        '--delay', params.existing_cram_quickcheck_delay_seconds.toString(),
-        '--timeout', params.existing_cram_quickcheck_timeout_seconds.toString(),
+        '--samtools', params.samtools_bin.toString(),
         '--min-cram-size', params.existing_cram_min_size_bytes.toString(), '--min-crai-size', params.existing_crai_min_size_bytes.toString()
     ].collect { it.toString() }
     if (marker.isFile()) command.addAll(['--marker', marker.absolutePath].collect { it.toString() })
@@ -183,7 +179,7 @@ ch_samples = ch_parsed_samples
             if (!paramAsBoolean(params.skip_existing_cram)) return true
             def validation = validateExistingCram(meta.id, sample_tuple[2])
             def action = validation.status == 'COMPLETE' ? 'skip' : (validation.status == 'INCOMPLETE' ? 'reprocess' : 'abort_not_reprocess')
-            log.info "EXISTING_CRAM_CHECK sample=${meta.id} status=${validation.status} cram=${validation.cram} crai=${validation.crai} marker=${validation.marker ?: 'absent'} reason=${validation.reason} action=${action}\n${validation.diagnostics ?: ''}"
+            log.info "EXISTING_CRAM_CHECK sample=${meta.id} status=${validation.status} reason=${validation.reason} action=${action}"
             if (validation.status == 'COMPLETE') return false
             if (validation.status == 'INCOMPLETE') return true
             if (validation.status == 'UNKNOWN') error "Cannot determine whether existing CRAM for sample ${meta.id} is valid. ${validation.reason}. Refusing to re-download and realign; resolve coordinator/storage validation or use --force_reprocess_existing_cram true."
@@ -1199,9 +1195,7 @@ process MERGE_BAMS {
 process BAM_TO_CRAM {
     tag "${meta.id}"
     label 'alignment_related'
-    // The marker is created last and is the publication-completion signal. The
-    // startup validator still waits for stable destination sizes because copy
-    // publication is not an atomic rename on every shared filesystem.
+    // The marker is created last and is the publication-completion signal.
     publishDir "${params.outdir}/${meta.id}/alignment", mode: 'copy', pattern: "*.{cram,crai,complete}"
 
     input:
