@@ -34,15 +34,35 @@ if (!params.containsKey('align_sort_mem_per_thread') || params.align_sort_mem_pe
     params.align_sort_mem_per_thread = '2G'
 }
 
-def runCommand = { List<String> command ->
+def runCommand = { List command ->
+    def stringCommand = command.collect { item ->
+        if (item == null) {
+            throw new IllegalArgumentException("Null command argument in: ${command}")
+        }
+        item.toString()
+    }
+
     try {
-        def proc = new ProcessBuilder(command).redirectErrorStream(true).start()
+        log.info "Running external command: ${stringCommand.collect { it.contains(' ') ? "'${it}'" : it }.join(' ')}"
+
+        def proc = new ProcessBuilder(stringCommand)
+            .redirectErrorStream(true)
+            .start()
         def output = new StringBuffer()
-        def reader = Thread.start { proc.inputStream.withReader { it.eachLine { line -> output.append(line).append('\n') } } }
-        proc.waitFor(); reader.join(5000)
-        [exitCode: proc.exitValue(), output: output.toString(), exception: null]
+        def reader = Thread.start {
+            proc.inputStream.withReader { stream ->
+                stream.eachLine { line ->
+                    output.append(line).append('\n')
+                }
+            }
+        }
+
+        proc.waitFor()
+        reader.join(5000)
+
+        return [exitCode: proc.exitValue(), output: output.toString(), exception: null]
     } catch (Exception e) {
-        [exitCode: null, output: e.toString(), exception: e]
+        return [exitCode: null, output: "${e.class.name}: ${e.message}", exception: e]
     }
 }
 
@@ -56,14 +76,17 @@ def validateExistingCram = { String sampleId, String refName ->
 
     def marker = new File(alignmentDir, "${sampleId}.cram.complete")
     def ref = new File("${params.global_ref_dir}/${refName}.fa")
-    def command = ["${projectDir}/scripts/validate_cram.sh", '--cram', cram.absolutePath, '--crai', crai.absolutePath,
+    def validatorScript = new File(projectDir.toString(), 'scripts/validate_cram.sh').absolutePath
+    def command = [validatorScript, '--cram', cram.absolutePath, '--crai', crai.absolutePath,
         '--reference', ref.absolutePath, '--samtools', params.samtools_bin.toString(),
         '--stability-retries', params.existing_cram_check_retries.toString(),
         '--retries', params.existing_cram_quickcheck_retries.toString(),
         '--delay', params.existing_cram_quickcheck_delay_seconds.toString(),
         '--timeout', params.existing_cram_quickcheck_timeout_seconds.toString(),
-        '--min-cram-size', params.existing_cram_min_size_bytes.toString(), '--min-crai-size', params.existing_crai_min_size_bytes.toString()]
-    if (marker.isFile()) command.addAll(['--marker', marker.absolutePath])
+        '--min-cram-size', params.existing_cram_min_size_bytes.toString(), '--min-crai-size', params.existing_crai_min_size_bytes.toString()
+    ].collect { it.toString() }
+    if (marker.isFile()) command.addAll(['--marker', marker.absolutePath].collect { it.toString() })
+    assert command.every { it instanceof String }
     def result = runCommand(command)
     def status = result.exitCode == 0 ? 'COMPLETE' : (result.exitCode == 1 ? 'INCOMPLETE' : 'UNKNOWN')
     def reasonMatch = (result.output =~ /(?m)^REASON=(.*)$/)
