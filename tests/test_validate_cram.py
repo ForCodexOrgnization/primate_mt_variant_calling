@@ -1,202 +1,170 @@
-import os
 import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
 
-VALIDATOR = Path(__file__).parents[1] / "scripts" / "validate_cram.sh"
+ROOT = Path(__file__).parents[1]
+VALIDATOR = ROOT / "scripts" / "validate_cram.sh"
 
 
 class ValidateCramTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
-        self.cram = root / "sample.cram"
-        self.crai = root / "sample.cram.crai"
-        self.ref = root / "ref.fa"
+        self.root = Path(self.tmp.name)
+        self.cram = self.root / "sample.cram"
+        self.crai = self.root / "sample.cram.crai"
         self.cram.write_bytes(b"C" * 2048)
         self.crai.write_bytes(b"I" * 32)
-        self.ref.write_text(">chrM\nA\n")
-        Path(str(self.ref) + ".fai").write_text("chrM\t1\t6\t1\t2\n")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def mock(self, quickcheck="exit 0", idxstats="exit 0"):
-        path = Path(self.tmp.name) / "samtools"
+    def mock(self, quickcheck="exit 0"):
+        path = self.root / "samtools"
+        log = self.root / "samtools.calls"
         path.write_text(textwrap.dedent(f"""\
             #!/bin/bash
+            printf '%s\\n' "$*" >> "{log}"
             case "$1" in
               --version) echo 'samtools 1.test'; exit 0;;
               quickcheck) {quickcheck};;
-              idxstats) {idxstats};;
+              *) exit 99;;
             esac
         """))
         path.chmod(0o755)
-        return path
+        return path, log
 
     def run_validator(self, samtools, crai=None, extra=()):
-        return subprocess.run([str(VALIDATOR), "--cram", str(self.cram), "--crai", str(crai or self.crai),
-            "--reference", str(self.ref), "--samtools", str(samtools), "--retries", "3", "--delay", "0",
-            *extra], text=True, capture_output=True)
+        return subprocess.run(
+            [str(VALIDATOR), "--cram", str(self.cram), "--crai", str(crai or self.crai),
+             "--samtools", str(samtools), *extra],
+            text=True, capture_output=True,
+        )
 
-    def test_complete_with_marker(self):
-        marker = Path(self.tmp.name) / "sample.cram.complete"
+    def assert_status(self, result, returncode, status, reason):
+        self.assertEqual(result.returncode, returncode, result.stdout + result.stderr)
+        self.assertIn(f"STATUS={status}", result.stdout)
+        self.assertIn(f"REASON={reason}", result.stdout)
+
+    def test_complete_marker_is_fastest_path_without_samtools(self):
+        marker = self.root / "sample.cram.complete"
         marker.write_text("cram_size=2048\ncrai_size=32\n")
-        result = self.run_validator(self.mock(), extra=("--marker", str(marker)))
-        self.assertEqual(result.returncode, 0); self.assertIn("STATUS=COMPLETE", result.stdout)
+        result = self.run_validator("/samtools/must/not/run", extra=("--marker", str(marker)))
+        self.assert_status(result, 0, "COMPLETE", "completion_marker_and_sizes_match")
 
-    def test_legacy_without_marker(self):
-        self.assertEqual(self.run_validator(self.mock()).returncode, 0)
-
-    def test_samtools_1_21_idxstats_uses_cram_reference_input_option(self):
-        args_file = Path(self.tmp.name) / "idxstats-args"
-        samtools = Path(self.tmp.name) / "samtools-1.21"
-        samtools.write_text(textwrap.dedent(f"""\
-            #!/bin/bash
-            case "$1" in
-              --version) echo 'samtools 1.21'; exit 0;;
-              quickcheck) exit 0;;
-              idxstats)
-                printf '%s\\n' "$@" > "{args_file}"
-                [[ "$2" == --input-fmt-option ]] || exit 10
-                [[ "$3" == "reference={self.ref}" ]] || exit 11
-                [[ "$4" == "{self.cram}" ]] || exit 12
-                [[ $# == 4 ]] || exit 13
-                exit 0;;
-            esac
-        """))
-        samtools.chmod(0o755)
-
+    def test_legacy_runs_exactly_one_quickcheck(self):
+        samtools, log = self.mock()
         result = self.run_validator(samtools)
+        self.assert_status(result, 0, "COMPLETE", "files_exist_and_quickcheck_passed")
+        calls = log.read_text().splitlines()
+        self.assertEqual(sum(line.startswith("quickcheck -v ") for line in calls), 1)
+        self.assertFalse(any(line.startswith("idxstats") for line in calls))
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("STATUS=COMPLETE", result.stdout)
-        self.assertIn("REASON=quickcheck_and_idxstats_passed", result.stdout)
-        self.assertRegex(result.stderr, r"QUICKCHECK_ATTEMPT=1/3 EXIT=0")
-        self.assertIn("IDXSTATS_EXIT=0", result.stderr)
-        self.assertEqual(args_file.read_text().splitlines(), [
-            "idxstats", "--input-fmt-option", f"reference={self.ref}", str(self.cram),
-        ])
-
-    def test_idxstats_usage_error_reports_invalid_command(self):
-        result = self.run_validator(self.mock(
-            idxstats='echo "Usage: samtools idxstats [options] <in.bam>" >&2; exit 1',
+    def test_ignored_legacy_options_do_not_wait_or_require_reference(self):
+        samtools, _ = self.mock()
+        started = time.monotonic()
+        result = self.run_validator(samtools, extra=(
+            "--reference", "/missing/reference.fa", "--stability-retries", "9",
+            "--retries", "9", "--delay", "10", "--timeout", "1",
         ))
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("STATUS=UNKNOWN", result.stdout)
-        self.assertIn("REASON=idxstats_command_invalid", result.stdout)
+        self.assert_status(result, 0, "COMPLETE", "files_exist_and_quickcheck_passed")
+        self.assertLess(time.monotonic() - started, 2)
 
-    def test_idxstats_read_failure_remains_unknown(self):
-        result = self.run_validator(self.mock(
-            idxstats='echo "failed to read index" >&2; exit 1',
-        ))
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("STATUS=UNKNOWN", result.stdout)
-        self.assertIn("REASON=idxstats_failed", result.stdout)
+    def test_missing_cram_is_incomplete(self):
+        self.cram.unlink()
+        result = self.run_validator("/samtools/must/not/run")
+        self.assert_status(result, 1, "INCOMPLETE", "cram_missing")
 
-    def test_missing_reference_fai_is_unknown(self):
-        Path(str(self.ref) + ".fai").unlink()
-        result = self.run_validator(self.mock())
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("STATUS=UNKNOWN", result.stdout)
-        self.assertIn("REASON=reference_or_fai_unavailable", result.stdout)
+    def test_missing_crai_is_incomplete(self):
+        result = self.run_validator("/samtools/must/not/run", self.root / "missing.crai")
+        self.assert_status(result, 1, "INCOMPLETE", "crai_missing")
+
+    def test_cram_below_minimum_is_incomplete(self):
+        self.cram.write_bytes(b"")
+        result = self.run_validator("/samtools/must/not/run")
+        self.assert_status(result, 1, "INCOMPLETE", "cram_below_minimum_size")
+
+    def test_crai_below_minimum_is_incomplete(self):
+        self.crai.write_bytes(b"I")
+        result = self.run_validator("/samtools/must/not/run")
+        self.assert_status(result, 1, "INCOMPLETE", "crai_below_minimum_size")
+
+    def test_quickcheck_failure_is_incomplete_and_preserves_stderr(self):
+        samtools, _ = self.mock('echo "truncated CRAM" >&2; exit 1')
+        result = self.run_validator(samtools)
+        self.assert_status(result, 1, "INCOMPLETE", "quickcheck_failed")
+        self.assertIn("truncated CRAM", result.stderr)
 
     def test_samtools_missing_is_unknown(self):
         result = self.run_validator("/does/not/exist")
-        self.assertEqual(result.returncode, 2); self.assertIn("samtools_unavailable", result.stdout)
+        self.assert_status(result, 2, "UNKNOWN", "samtools_unavailable")
 
-    def test_transient_then_success(self):
-        count = Path(self.tmp.name) / "count"
-        cmd = f'n=$(cat "{count}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{count}"; if ((n==1)); then echo "Input/output error" >&2; exit 1; fi; exit 0'
-        result = self.run_validator(self.mock(cmd))
-        self.assertEqual(result.returncode, 0); self.assertIn("QUICKCHECK_ATTEMPTS=2", result.stdout)
+    def test_mismatched_marker_falls_back_to_one_quickcheck(self):
+        marker = self.root / "bad.complete"
+        marker.write_text("cram_size=1\ncrai_size=2\n")
+        samtools, log = self.mock()
+        result = self.run_validator(samtools, extra=("--marker", str(marker)))
+        self.assert_status(result, 0, "COMPLETE", "files_exist_and_quickcheck_passed")
+        self.assertEqual(sum(line.startswith("quickcheck -v ") for line in log.read_text().splitlines()), 1)
 
-    def test_confirmed_truncation_is_incomplete(self):
-        result = self.run_validator(self.mock('echo "truncated file" >&2; exit 1'))
-        self.assertEqual(result.returncode, 1); self.assertIn("confirmed_corrupt", result.stdout)
+    def test_one_hundred_marked_results_need_no_samtools_and_finish_quickly(self):
+        started = time.monotonic()
+        for number in range(100):
+            cram = self.root / f"sample-{number}.cram"
+            crai = self.root / f"sample-{number}.cram.crai"
+            marker = self.root / f"sample-{number}.cram.complete"
+            cram.write_bytes(b"C" * 1024)
+            crai.write_bytes(b"I" * 16)
+            marker.write_text("cram_size=1024\ncrai_size=16\n")
+            result = subprocess.run([
+                str(VALIDATOR), "--cram", str(cram), "--crai", str(crai),
+                "--marker", str(marker), "--samtools", "/samtools/must/not/run",
+            ], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # This includes 100 separate Python subprocess launches; the validator
+        # itself performs no sleep and never starts samtools on the marker path.
+        self.assertLess(time.monotonic() - started, 15)
 
-    def test_missing_crai_is_incomplete(self):
-        result = self.run_validator(self.mock(), Path(self.tmp.name) / "missing.crai")
-        self.assertEqual(result.returncode, 1); self.assertIn("crai_missing", result.stdout)
+    def test_pipeline_contract_uses_fast_arguments_and_backfills_marker(self):
+        source = (ROOT / "preprocessing.nf").read_text()
+        command = source[source.index("def command = [validatorScript"):source.index("assert command.every")]
+        for obsolete in ("--reference", "--stability-retries", "--retries", "--delay", "--timeout"):
+            self.assertNotIn(obsolete, command)
+        self.assertIn("StandardCopyOption.ATOMIC_MOVE", source)
+        self.assertIn("status == 'UNKNOWN') error", source)
+        self.assertIn("status == 'COMPLETE') return false", source)
 
-    def test_alternate_crai_is_valid(self):
-        alternate = Path(self.tmp.name) / "sample.crai"; alternate.write_bytes(b"I" * 32)
-        self.assertEqual(self.run_validator(self.mock(), alternate).returncode, 0)
-
-    def test_timeout_is_unknown(self):
-        result = self.run_validator(self.mock("sleep 2; exit 0"), extra=("--timeout", "1"))
-        self.assertEqual(result.returncode, 2); self.assertIn("STATUS=UNKNOWN", result.stdout)
-
-    def test_marker_mismatch_is_unknown(self):
-        marker = Path(self.tmp.name) / "bad.complete"; marker.write_text("cram_size=1\ncrai_size=2\n")
-        result = self.run_validator(self.mock(), extra=("--marker", str(marker)))
-        self.assertEqual(result.returncode, 2); self.assertIn("marker_size_mismatch", result.stdout)
-
-    def test_force_reprocess_guard_precedes_validation(self):
-        source = (Path(__file__).parents[1] / "preprocessing.nf").read_text()
-        force = source.index("if (paramAsBoolean(params.force_reprocess_existing_cram))")
-        validation = source.index("def validation = validateExistingCram", force)
-        self.assertLess(force, validation)
-        self.assertIn("reason=user_forced", source[force:validation])
-
-    def test_coordinator_command_arguments_are_converted_to_strings(self):
-        source = (Path(__file__).parents[1] / "preprocessing.nf").read_text()
-        self.assertIn("def runCommand = { List command ->", source)
-        self.assertIn("def stringCommand = command.collect", source)
-        self.assertIn("new ProcessBuilder(stringCommand)", source)
-        self.assertIn("assert command.every { it instanceof String }", source)
+    def test_bam_to_cram_marker_is_atomic_and_published(self):
+        source = (ROOT / "preprocessing.nf").read_text()
+        process = source[source.index("process BAM_TO_CRAM"):]
+        self.assertLess(process.index('samtools quickcheck -v "${cram_out}"'), process.index('cat > "${meta.id}.cram.complete.tmp"'))
+        self.assertIn('mv "${meta.id}.cram.complete.tmp" "${meta.id}.cram.complete"', process)
+        self.assertIn('pattern: "*.{cram,crai,complete}"', process)
 
     @unittest.skipUnless(shutil.which("nextflow"), "Nextflow is not installed")
-    def test_nextflow_coordinator_starts_cram_validator(self):
-        root = Path(self.tmp.name)
+    def test_nextflow_legacy_result_is_skipped_and_marker_is_backfilled(self):
         sample = "coordinator_test"
-        alignment = root / "out" / sample / "alignment"
+        alignment = self.root / "out" / sample / "alignment"
         alignment.mkdir(parents=True)
-        cram = alignment / f"{sample}.cram"
-        crai = alignment / f"{sample}.cram.crai"
-        cram.write_bytes(b"C" * 2048)
-        crai.write_bytes(b"I" * 32)
-        reference_dir = root / "references"
-        reference_dir.mkdir()
-        reference = reference_dir / "test_ref.fa"
-        reference.write_text(">chrM\nA\n")
-        Path(str(reference) + ".fai").write_text("chrM\t1\t6\t1\t2\n")
-        samples = root / "samples.tsv"
+        (alignment / f"{sample}.cram").write_bytes(b"C" * 2048)
+        (alignment / f"{sample}.cram.crai").write_bytes(b"I" * 32)
+        samples = self.root / "samples.tsv"
         samples.write_text(f"{sample}\ttest_species\ttest_ref\n")
-        invoked = root / "samtools-invoked"
-        samtools = self.mock(
-            f'touch "{invoked}"; exit 0',
-            f'touch "{invoked}"; exit 0',
-        )
-
-        result = subprocess.run(
-            [
-                shutil.which("nextflow"), "run", str(Path(__file__).parents[1] / "preprocessing.nf"),
-                "--sample_tsv", str(samples), "--outdir", str(root / "out"),
-                "--global_ref_dir", str(reference_dir), "--samtools_bin", str(samtools),
-                "--existing_cram_check_retries", "1", "--existing_cram_quickcheck_retries", "1",
-                "--existing_cram_quickcheck_delay_seconds", "0",
-            ],
-            cwd=root, text=True, capture_output=True,
-        )
-
+        samtools, log = self.mock()
+        result = subprocess.run([
+            shutil.which("nextflow"), "run", str(ROOT / "preprocessing.nf"),
+            "--sample_tsv", str(samples), "--outdir", str(self.root / "out"),
+            "--samtools_bin", str(samtools),
+        ], cwd=self.root, text=True, capture_output=True)
         diagnostics = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostics)
-        self.assertTrue(invoked.exists(), diagnostics)
-        self.assertNotIn("ArrayStoreException", diagnostics)
-        self.assertIn("status=COMPLETE", diagnostics)
-
-    def test_growing_cram_is_unknown(self):
-        grower = subprocess.Popen(["bash", "-c", f'for i in {{1..15}}; do printf X >> "{self.cram}"; sleep .2; done'])
-        try:
-            result = self.run_validator(self.mock(), extra=("--delay", "1", "--stability-retries", "2"))
-        finally:
-            grower.wait()
-        self.assertEqual(result.returncode, 2); self.assertIn("files_not_stable", result.stdout)
+        self.assertTrue((alignment / f"{sample}.cram.complete").is_file())
+        self.assertEqual(sum(line.startswith("quickcheck -v ") for line in log.read_text().splitlines()), 1)
+        self.assertIn("status=COMPLETE reason=files_exist_and_quickcheck_passed action=skip", diagnostics)
 
 
 if __name__ == "__main__":

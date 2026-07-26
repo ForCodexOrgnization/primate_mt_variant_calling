@@ -25,6 +25,9 @@ assert "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}" in nf
 assert re.search(r'process MERGE_RUN_CHUNK_BAMS.*?bams\.size\(\).*?samtools merge.*?samtools index.*?samtools quickcheck.*?mv', nf, re.S)
 
 for token in ("#SBATCH --requeue", "#SBATCH --signal=B:USR1@300", "trap handle_requeue USR1",
-              'NEXTFLOW_PID=$!', '-resume -w "${WORK_DIR}"', "samtools quickcheck"):
+              'NEXTFLOW_PID=$!', '-resume -w "${WORK_DIR}"', "scripts/validate_cram.sh"):
     assert token in launch, token
+verify = launch[launch.index("verify_batch_outputs()") : launch.index("# --- 用户配置区 ---")]
+for obsolete in ("--reference", "--stability-retries", "--retries", "--delay"):
+    assert obsolete not in verify, obsolete
 print("chunk-resume source contract: PASS")
