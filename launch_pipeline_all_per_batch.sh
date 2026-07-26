@@ -44,6 +44,7 @@ LOG_DIR="${LOG_DIR:-log_all_per_batch}"
 BATCH_LIST_DIR="${BATCH_LIST_DIR:-${NF_BASE_WORK_DIR}/batch_lists}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
+ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-true}"
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -69,6 +70,7 @@ echo "INFO: NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
 echo "INFO: NF_CONFIG_FILE=${NF_CONFIG_FILE}"
 echo "INFO: NF_CONFIG_PATH=${NF_CONFIG_PATH}"
 echo "INFO: CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}"
+echo "INFO: ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT}"
 
 cleanup_work_dir_if_requested() {
     local stage_name="$1"
@@ -265,7 +267,16 @@ run_chain() {
     local round2_batch_work_dir="${ROUND2_NF_BASE_WORK_DIR}/${batch_name}"
 
     log "Starting per-batch chain ${batch_id}: ${batch_file}"
-    env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${PRE_OUTPUT_DIR}" NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${PRE_LAUNCH_SCRIPT}"
+    env \
+        ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT}" \
+        BATCH_FILE="${batch_file}" \
+        BATCH_ID="${batch_name}" \
+        FULL_SAMPLE_LIST="${batch_file}" \
+        OUTPUT_DIR="${PRE_OUTPUT_DIR}" \
+        NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" \
+        NF_CONFIG_FILE="${NF_CONFIG_FILE}" \
+        DEFER_WORK_DIR_CLEANUP=1 \
+        bash "${PRE_LAUNCH_SCRIPT}"
     validate_pre_to_round1 "${batch_file}" || fail "Preprocessing outputs are incomplete for ${batch_file}"
     cleanup_work_dir_if_requested "pre_${batch_name}" "${pre_batch_work_dir}"
 
