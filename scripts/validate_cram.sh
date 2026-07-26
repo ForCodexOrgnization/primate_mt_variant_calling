@@ -77,12 +77,22 @@ fi
 idx=("$samtools_bin" idxstats)
 if [[ -n "$reference" ]]; then
   [[ -r "$reference" && -r "${reference}.fai" ]] || { emit UNKNOWN reference_or_fai_unavailable; exit 2; }
-  idx+=(--reference "$reference")
+  idx+=(
+    --input-fmt-option
+    "reference=${reference}"
+  )
 fi
 idx+=("$cram")
 idx_output=$(timeout --signal=KILL "$timeout_seconds" "${idx[@]}" 2>&1); idx_rc=$?
 echo "IDXSTATS_EXIT=$idx_rc COMMAND=${idx[*]} OUTPUT=${idx_output//$'\n'/\\n}" >&2
-((idx_rc == 0)) || { emit UNKNOWN idxstats_failed; exit 2; }
+if ((idx_rc != 0)); then
+  if [[ $idx_output == *"Usage: samtools idxstats"* ]]; then
+    emit UNKNOWN idxstats_command_invalid
+  else
+    emit UNKNOWN idxstats_failed
+  fi
+  exit 2
+fi
 emit COMPLETE quickcheck_and_idxstats_passed
 echo "QUICKCHECK_ATTEMPTS=$quickcheck_attempts"
 exit 0
