@@ -4,6 +4,16 @@ nextflow.enable.dsl=2
 if (!params.containsKey('skip_existing_cram') || params.skip_existing_cram == null) {
     params.skip_existing_cram = true
 }
+params.force_reprocess_existing_cram = params.force_reprocess_existing_cram ?: false
+params.backfill_existing_cram_marker = params.containsKey('backfill_existing_cram_marker') ? params.backfill_existing_cram_marker : true
+params.existing_cram_check_retries = params.existing_cram_check_retries ?: 3
+params.existing_cram_check_delay_seconds = params.existing_cram_check_delay_seconds ?: 10
+params.existing_cram_min_size_bytes = params.existing_cram_min_size_bytes ?: 1024
+params.existing_crai_min_size_bytes = params.existing_crai_min_size_bytes ?: 16
+params.existing_cram_quickcheck_retries = params.existing_cram_quickcheck_retries ?: 3
+params.existing_cram_quickcheck_delay_seconds = params.existing_cram_quickcheck_delay_seconds ?: 10
+params.existing_cram_quickcheck_timeout_seconds = params.existing_cram_quickcheck_timeout_seconds ?: 120
+def paramAsBoolean = { value -> value instanceof Boolean ? value : value?.toString()?.toBoolean() }
 
 if (!params.containsKey('enable_chunked_alignment') || params.enable_chunked_alignment == null) {
     params.enable_chunked_alignment = true
@@ -24,24 +34,54 @@ if (!params.containsKey('align_sort_mem_per_thread') || params.align_sort_mem_pe
     params.align_sort_mem_per_thread = '2G'
 }
 
-def existingCramIsComplete = { String sampleId ->
-    def cram = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram")
-    def crai = new File("${params.outdir}/${sampleId}/alignment/${sampleId}.cram.crai")
-
-    if (!cram.isFile() || cram.length() == 0 || !crai.isFile() || crai.length() == 0) {
-        return false
-    }
-
+def runCommand = { List<String> command ->
     try {
-        def proc = new ProcessBuilder('samtools', 'quickcheck', cram.absolutePath)
-            .redirectErrorStream(true)
-            .start()
-        proc.waitFor()
-        return proc.exitValue() == 0
-    } catch (IOException e) {
-        log.warn "Could not run 'samtools quickcheck' for existing CRAM ${cram}; will reprocess sample ${sampleId}."
-        return false
+        def proc = new ProcessBuilder(command).redirectErrorStream(true).start()
+        def output = new StringBuffer()
+        def reader = Thread.start { proc.inputStream.withReader { it.eachLine { line -> output.append(line).append('\n') } } }
+        proc.waitFor(); reader.join(5000)
+        [exitCode: proc.exitValue(), output: output.toString(), exception: null]
+    } catch (Exception e) {
+        [exitCode: null, output: e.toString(), exception: e]
     }
+}
+
+def validateExistingCram = { String sampleId, String refName ->
+    def alignmentDir = new File("${params.outdir}/${sampleId}/alignment")
+    def cram = new File(alignmentDir, "${sampleId}.cram")
+    def candidates = [new File(alignmentDir, "${sampleId}.cram.crai"), new File(alignmentDir, "${sampleId}.crai")]
+    def crai = candidates.find { it.isFile() }
+    if (!cram.isFile()) return [status:'INCOMPLETE', reason:'cram_missing', cram:cram.absolutePath, crai:null]
+    if (!crai) return [status:'INCOMPLETE', reason:"crai_missing_checked=${candidates*.absolutePath.join(',')}", cram:cram.absolutePath, crai:null]
+
+    def marker = new File(alignmentDir, "${sampleId}.cram.complete")
+    def ref = new File("${params.global_ref_dir}/${refName}.fa")
+    def command = ["${projectDir}/scripts/validate_cram.sh", '--cram', cram.absolutePath, '--crai', crai.absolutePath,
+        '--reference', ref.absolutePath, '--samtools', params.samtools_bin.toString(),
+        '--stability-retries', params.existing_cram_check_retries.toString(),
+        '--retries', params.existing_cram_quickcheck_retries.toString(),
+        '--delay', params.existing_cram_quickcheck_delay_seconds.toString(),
+        '--timeout', params.existing_cram_quickcheck_timeout_seconds.toString(),
+        '--min-cram-size', params.existing_cram_min_size_bytes.toString(), '--min-crai-size', params.existing_crai_min_size_bytes.toString()]
+    if (marker.isFile()) command.addAll(['--marker', marker.absolutePath])
+    def result = runCommand(command)
+    def status = result.exitCode == 0 ? 'COMPLETE' : (result.exitCode == 1 ? 'INCOMPLETE' : 'UNKNOWN')
+    def reasonMatch = (result.output =~ /(?m)^REASON=(.*)$/)
+    def reason = reasonMatch.find() ? reasonMatch.group(1) : "validator_exit=${result.exitCode}"
+    def validation = [status:status, reason:reason, cram:cram.absolutePath, crai:crai.absolutePath,
+        marker:marker.isFile() ? 'present' : 'legacy_missing', diagnostics:result.output.trim()]
+
+    if (status == 'COMPLETE' && !marker.isFile() && paramAsBoolean(params.backfill_existing_cram_marker)) {
+        try {
+            def tmp = new File(alignmentDir, ".${sampleId}.cram.complete.${UUID.randomUUID()}.tmp")
+            tmp.text = "sample_id=${sampleId}\nref_name=${refName}\ncram=${cram.name}\ncrai=${crai.name}\ncram_size=${cram.length()}\ncrai_size=${crai.length()}\nsamtools_version=coordinator_validation\ncompleted_at=${java.time.OffsetDateTime.now()}\n"
+            java.nio.file.Files.move(tmp.toPath(), marker.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+            validation.marker = 'backfilled'
+        } catch (Exception e) {
+            log.warn "Validated legacy CRAM for ${sampleId}, but atomic marker backfill failed: ${e}"
+        }
+    }
+    validation
 }
 
 /*
@@ -57,6 +97,8 @@ Sample TSV          : ${params.sample_tsv}
 Output Directory    : ${params.outdir}
 Reference Directory : ${params.global_ref_dir}
 Skip existing CRAM  : ${params.skip_existing_cram}
+Force reprocess     : ${params.force_reprocess_existing_cram}
+Samtools binary     : ${params.samtools_bin}
 Chunked alignment   : ${params.enable_chunked_alignment}
 Chunk threshold GB  : ${params.chunked_alignment_size_threshold_gb}
 FASTQ chunk reads   : ${params.fastq_chunk_reads}
@@ -111,10 +153,18 @@ ch_samples = ch_parsed_samples
             }
 
             def meta = sample_tuple[0]
-            if (params.skip_existing_cram && existingCramIsComplete(meta.id)) {
-                log.info "Skipping sample ${meta.id}: complete CRAM and CRAI already exist under ${params.outdir}/${meta.id}/alignment"
-                return false
+            if (paramAsBoolean(params.force_reprocess_existing_cram)) {
+                log.warn "EXISTING_CRAM_CHECK sample=${meta.id} action=reprocess reason=user_forced"
+                return true
             }
+            if (!paramAsBoolean(params.skip_existing_cram)) return true
+            def validation = validateExistingCram(meta.id, sample_tuple[2])
+            def action = validation.status == 'COMPLETE' ? 'skip' : (validation.status == 'INCOMPLETE' ? 'reprocess' : 'abort_not_reprocess')
+            log.info "EXISTING_CRAM_CHECK sample=${meta.id} status=${validation.status} cram=${validation.cram} crai=${validation.crai} marker=${validation.marker ?: 'absent'} reason=${validation.reason} action=${action}\n${validation.diagnostics ?: ''}"
+            if (validation.status == 'COMPLETE') return false
+            if (validation.status == 'INCOMPLETE') return true
+            if (validation.status == 'UNKNOWN') error "Cannot determine whether existing CRAM for sample ${meta.id} is valid. ${validation.reason}. Refusing to re-download and realign; resolve coordinator/storage validation or use --force_reprocess_existing_cram true."
+            error "Unexpected existing CRAM validation status: ${validation}"
             return true
         }
 
@@ -1126,13 +1176,16 @@ process MERGE_BAMS {
 process BAM_TO_CRAM {
     tag "${meta.id}"
     label 'alignment_related'
-    publishDir "${params.outdir}/${meta.id}/alignment", mode: 'copy', pattern: "*.{cram,crai}"
+    // The marker is created last and is the publication-completion signal. The
+    // startup validator still waits for stable destination sizes because copy
+    // publication is not an atomic rename on every shared filesystem.
+    publishDir "${params.outdir}/${meta.id}/alignment", mode: 'copy', pattern: "*.{cram,crai,complete}"
 
     input:
     tuple val(meta), val(species_name), val(ref_name), path(bam), path(bai)
 
     output:
-    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.cram"), path("${meta.id}.cram.crai"), emit: cram
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.cram"), path("${meta.id}.cram.crai"), path("${meta.id}.cram.complete"), emit: cram
 
     script:
     def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
@@ -1159,7 +1212,23 @@ process BAM_TO_CRAM {
     samtools index -@ ${task.cpus} "${cram_out}" "${crai_out}"
     
     # 4. 验证 CRAM 文件是否损坏
-    samtools quickcheck "${cram_out}"
+    samtools quickcheck -v "${cram_out}"
+    samtools idxstats --reference "${ref_file}" "${cram_out}" >/dev/null
+
+    cram_size=\$(stat -c%s "${cram_out}")
+    crai_size=\$(stat -c%s "${crai_out}")
+    samtools_version=\$(samtools --version | head -n1)
+    cat > "${meta.id}.cram.complete.tmp" <<EOF
+sample_id=${meta.id}
+ref_name=${ref_name}
+cram=${cram_out}
+crai=${crai_out}
+cram_size=\${cram_size}
+crai_size=\${crai_size}
+samtools_version=\${samtools_version}
+completed_at=\$(date --iso-8601=seconds)
+EOF
+    mv "${meta.id}.cram.complete.tmp" "${meta.id}.cram.complete"
     """
 }
 

@@ -45,7 +45,10 @@ run_nextflow() {
     nextflow run "${SUBMIT_DIR}/preprocessing.nf" \
         -c "${NF_CONFIG_PATH}" -profile cluster -resume -w "${WORK_DIR}" \
         --sample_tsv "${ACTIVE_BATCH_FILE}" --outdir "${OUTPUT_DIR}" \
-        --enable_chunked_alignment "${ENABLE_CHUNKED_ALIGNMENT:-true}" &
+        --enable_chunked_alignment "${ENABLE_CHUNKED_ALIGNMENT:-true}" \
+        --skip_existing_cram "${SKIP_EXISTING_CRAM:-true}" \
+        --force_reprocess_existing_cram "${FORCE_REPROCESS_EXISTING_CRAM:-false}" \
+        --samtools_bin "${SAMTOOLS_BIN:-samtools}" &
     NEXTFLOW_PID=$!
     wait "${NEXTFLOW_PID}"
     local status=$?
@@ -55,13 +58,21 @@ run_nextflow() {
 }
 
 verify_batch_outputs() {
-    local verify_exit=0 sample_id cram_path crai_path
-    while IFS=$'\t' read -r sample_id _; do
+    local verify_exit=0 sample_id species ref_name cram_path crai_path reference
+    while IFS=$'\t' read -r sample_id species ref_name _; do
         [[ -n "${sample_id}" && "${sample_id}" != "sample" && "${sample_id}" != "sample_id" ]] || continue
         cram_path="${OUTPUT_DIR}/${sample_id}/alignment/${sample_id}.cram"
-        crai_path="${cram_path}.crai"
-        if [[ ! -s "${cram_path}" || ! -s "${crai_path}" ]] || ! samtools quickcheck "${cram_path}"; then
-            echo "ERROR: Missing or invalid CRAM/CRAI for ${sample_id}: ${cram_path}" >&2
+        if [[ -f "${cram_path}.crai" ]]; then crai_path="${cram_path}.crai"; else crai_path="${OUTPUT_DIR}/${sample_id}/alignment/${sample_id}.crai"; fi
+        ref_name="${ref_name:-${species}}"
+        reference="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}/${ref_name}.fa"
+        if "${SUBMIT_DIR}/scripts/validate_cram.sh" --cram "${cram_path}" --crai "${crai_path}" \
+             --reference "${reference}" --samtools "${SAMTOOLS_BIN:-samtools}" \
+             --stability-retries "${EXISTING_CRAM_CHECK_RETRIES:-3}" \
+             --retries "${EXISTING_CRAM_QUICKCHECK_RETRIES:-3}" --delay "${EXISTING_CRAM_QUICKCHECK_DELAY_SECONDS:-10}"; then
+            :
+        else
+            status=$?
+            echo "ERROR: CRAM validator failed for ${sample_id} (status ${status}): ${cram_path}" >&2
             verify_exit=1
         fi
     done < "${ACTIVE_BATCH_FILE}"
@@ -78,6 +89,14 @@ OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 module load Nextflow/24.10.2
 module load SAMtools/1.21-GCC-13.3.0
+SAMTOOLS_BIN="${SAMTOOLS_BIN:-$(command -v samtools || true)}"
+export SAMTOOLS_BIN
+echo "INFO: Coordinator samtools: ${SAMTOOLS_BIN:-not found}"
+if [[ -n "${SAMTOOLS_BIN}" ]]; then "${SAMTOOLS_BIN}" --version | head -n 2 || true; fi
+if [[ "${SKIP_EXISTING_CRAM:-true}" == "true" && -z "${SAMTOOLS_BIN}" ]]; then
+    echo "ERROR: samtools is required in the Nextflow coordinator environment to validate existing CRAM files." >&2
+    exit 1
+fi
 # ==============================================================================
 
 # BATCH_FILE mode: run exactly one pre-split batch directly instead of creating
