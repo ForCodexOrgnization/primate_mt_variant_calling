@@ -57,7 +57,7 @@ if [[ -n "$marker" && -f "$marker" ]]; then
     fi
 fi
 
-# Legacy result: exactly one lightweight quickcheck, with no reference decode.
+# Legacy result: retry the lightweight quickcheck once, with no reference decode.
 version_output=$("$samtools_bin" --version 2>&1)
 version_rc=$?
 if ((version_rc != 0)); then
@@ -65,13 +65,31 @@ if ((version_rc != 0)); then
     exit 2
 fi
 
-output=$("$samtools_bin" quickcheck -v "$cram" 2>&1)
-rc=$?
-if ((rc == 0)); then
-    emit COMPLETE files_exist_and_quickcheck_passed
-    exit 0
+quickcheck_output=""
+quickcheck_rc=1
+
+for attempt in 1 2; do
+    output=$("$samtools_bin" quickcheck -v "$cram" 2>&1)
+    rc=$?
+
+    echo "QUICKCHECK_ATTEMPT=${attempt}/2 EXIT=${rc} OUTPUT=${output//$'\n'/\\n}" >&2
+
+    if ((rc == 0)); then
+        emit COMPLETE files_exist_and_quickcheck_passed
+        exit 0
+    fi
+
+    quickcheck_output+=$'\n'"$output"
+    quickcheck_rc=$rc
+    ((attempt == 1)) && sleep 1
+done
+
+lower=${quickcheck_output,,}
+
+if [[ "$lower" =~ truncated.file|missing.eof.block|invalid.cram|malformed|was.not.identified.as.sequence.data ]]; then
+    emit INCOMPLETE confirmed_corrupt
+    exit 1
 fi
 
-printf '%s\n' "$output" >&2
-emit INCOMPLETE quickcheck_failed
-exit 1
+emit UNKNOWN quickcheck_indeterminate
+exit 2
