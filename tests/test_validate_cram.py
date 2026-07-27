@@ -93,11 +93,42 @@ class ValidateCramTests(unittest.TestCase):
         result = self.run_validator("/samtools/must/not/run")
         self.assert_status(result, 1, "INCOMPLETE", "crai_below_minimum_size")
 
-    def test_quickcheck_failure_is_incomplete_and_preserves_stderr(self):
-        samtools, _ = self.mock('echo "truncated CRAM" >&2; exit 1')
+    def test_first_quickcheck_failure_is_retried_and_can_complete(self):
+        attempts = self.root / "quickcheck.attempts"
+        samtools, log = self.mock(textwrap.dedent(f'''\
+            if [[ ! -e "{attempts}" ]]; then
+              touch "{attempts}"
+              echo "I/O error" >&2
+              exit 1
+            fi
+            exit 0
+        '''))
         result = self.run_validator(samtools)
-        self.assert_status(result, 1, "INCOMPLETE", "quickcheck_failed")
-        self.assertIn("truncated CRAM", result.stderr)
+        self.assert_status(result, 0, "COMPLETE", "files_exist_and_quickcheck_passed")
+        self.assertEqual(sum(line.startswith("quickcheck -v ") for line in log.read_text().splitlines()), 2)
+        self.assertIn("QUICKCHECK_ATTEMPT=1/2 EXIT=1 OUTPUT=I/O error", result.stderr)
+        self.assertIn("QUICKCHECK_ATTEMPT=2/2 EXIT=0 OUTPUT=", result.stderr)
+
+    def test_two_explicit_corruption_failures_are_incomplete(self):
+        samtools, log = self.mock('echo "truncated file" >&2; exit 1')
+        result = self.run_validator(samtools)
+        self.assert_status(result, 1, "INCOMPLETE", "confirmed_corrupt")
+        self.assertEqual(sum(line.startswith("quickcheck -v ") for line in log.read_text().splitlines()), 2)
+        self.assertIn("QUICKCHECK_ATTEMPT=1/2 EXIT=1 OUTPUT=truncated file", result.stderr)
+        self.assertIn("QUICKCHECK_ATTEMPT=2/2 EXIT=1 OUTPUT=truncated file", result.stderr)
+
+    def test_two_transient_failures_are_unknown(self):
+        samtools, log = self.mock('echo "stale file handle" >&2; exit 1')
+        result = self.run_validator(samtools)
+        self.assert_status(result, 2, "UNKNOWN", "quickcheck_indeterminate")
+        self.assertEqual(sum(line.startswith("quickcheck -v ") for line in log.read_text().splitlines()), 2)
+
+    def test_two_empty_failures_are_unknown_and_logged(self):
+        samtools, _ = self.mock('exit 3')
+        result = self.run_validator(samtools)
+        self.assert_status(result, 2, "UNKNOWN", "quickcheck_indeterminate")
+        self.assertIn("QUICKCHECK_ATTEMPT=1/2 EXIT=3 OUTPUT=", result.stderr)
+        self.assertIn("QUICKCHECK_ATTEMPT=2/2 EXIT=3 OUTPUT=", result.stderr)
 
     def test_samtools_missing_is_unknown(self):
         result = self.run_validator("/does/not/exist")
