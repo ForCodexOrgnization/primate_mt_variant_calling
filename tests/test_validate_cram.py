@@ -173,8 +173,16 @@ class ValidateCramTests(unittest.TestCase):
         source = (ROOT / "preprocessing.nf").read_text()
         process = source[source.index("process BAM_TO_CRAM"):]
         self.assertLess(process.index('samtools quickcheck -v "${cram_out}"'), process.index('cat > "${meta.id}.cram.complete.tmp"'))
+        self.assertLess(process.index('samtools quickcheck -v "${cram_out}"'), process.index('samtools idxstats "${cram_out}"'))
         self.assertIn('mv "${meta.id}.cram.complete.tmp" "${meta.id}.cram.complete"', process)
         self.assertIn('pattern: "*.{cram,crai,complete}"', process)
+
+    def test_pipeline_code_does_not_pass_reference_to_idxstats(self):
+        unsupported_option = "idxstats " + "--reference"
+        pipeline_suffixes = {".nf", ".sh", ".wdl"}
+        for path in ROOT.rglob("*"):
+            if path.is_file() and path.suffix in pipeline_suffixes:
+                self.assertNotIn(unsupported_option, path.read_text(), str(path.relative_to(ROOT)))
 
     @unittest.skipUnless(shutil.which("nextflow"), "Nextflow is not installed")
     def test_nextflow_legacy_result_is_skipped_and_marker_is_backfilled(self):

@@ -1230,7 +1230,7 @@ process BAM_TO_CRAM {
     
     # 4. 验证 CRAM 文件是否损坏
     samtools quickcheck -v "${cram_out}"
-    samtools idxstats --reference "${ref_file}" "${cram_out}" >/dev/null
+    samtools idxstats "${cram_out}" >/dev/null
 
     cram_size=\$(stat -c%s "${cram_out}")
     crai_size=\$(stat -c%s "${crai_out}")
