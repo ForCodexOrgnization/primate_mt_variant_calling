@@ -93,7 +93,35 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     exit 0
 fi
 
-module load Nextflow/24.04.4
+load_nextflow() {
+    if command -v nextflow >/dev/null 2>&1; then
+        echo "INFO: Using existing Nextflow: $(command -v nextflow)" >&2
+        nextflow -version
+        return 0
+    fi
+
+    if [[ -z "${NEXTFLOW_MODULE:-}" ]]; then
+        echo "ERROR: NEXTFLOW_MODULE is not set and nextflow is not already available" >&2
+        module spider Nextflow >&2 || true
+        exit 1
+    fi
+
+    echo "INFO: Loading Nextflow module: ${NEXTFLOW_MODULE}" >&2
+    module load "${NEXTFLOW_MODULE}" || {
+        echo "ERROR: Failed to load ${NEXTFLOW_MODULE}" >&2
+        module spider Nextflow >&2 || true
+        exit 1
+    }
+
+    command -v nextflow >/dev/null 2>&1 || {
+        echo "ERROR: nextflow not found after loading ${NEXTFLOW_MODULE}" >&2
+        exit 1
+    }
+
+    echo "INFO: Nextflow executable: $(command -v nextflow)" >&2
+    nextflow -version
+}
+load_nextflow
 
 log "Running per-sample streaming worker for 1-based task ${SLURM_ARRAY_TASK_ID}"
 log "REPO_DIR=${REPO_DIR}"

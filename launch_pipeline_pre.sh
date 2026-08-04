@@ -85,7 +85,35 @@ NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/nf_wor
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/roberts/scratch/pi_njl27/lt692/primate_results}"
 
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
-module load Nextflow/24.10.2
+load_nextflow() {
+    if command -v nextflow >/dev/null 2>&1; then
+        echo "INFO: Using existing Nextflow: $(command -v nextflow)" >&2
+        nextflow -version
+        return 0
+    fi
+
+    if [[ -z "${NEXTFLOW_MODULE:-}" ]]; then
+        echo "ERROR: NEXTFLOW_MODULE is not set and nextflow is not already available" >&2
+        module spider Nextflow >&2 || true
+        exit 1
+    fi
+
+    echo "INFO: Loading Nextflow module: ${NEXTFLOW_MODULE}" >&2
+    module load "${NEXTFLOW_MODULE}" || {
+        echo "ERROR: Failed to load ${NEXTFLOW_MODULE}" >&2
+        module spider Nextflow >&2 || true
+        exit 1
+    }
+
+    command -v nextflow >/dev/null 2>&1 || {
+        echo "ERROR: nextflow not found after loading ${NEXTFLOW_MODULE}" >&2
+        exit 1
+    }
+
+    echo "INFO: Nextflow executable: $(command -v nextflow)" >&2
+    nextflow -version
+}
+load_nextflow
 module load SAMtools/1.21-GCC-13.3.0
 SAMTOOLS_BIN="${SAMTOOLS_BIN:-$(command -v samtools || true)}"
 export SAMTOOLS_BIN
