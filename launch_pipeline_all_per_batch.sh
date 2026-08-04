@@ -46,9 +46,39 @@ NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-true}"
 NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
+export NEXTFLOW_MODULE
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
+
+load_nextflow() {
+    if command -v nextflow >/dev/null 2>&1; then
+        echo "INFO: Using existing Nextflow: $(command -v nextflow)" >&2
+        nextflow -version
+        return 0
+    fi
+
+    if [[ -z "${NEXTFLOW_MODULE:-}" ]]; then
+        echo "ERROR: NEXTFLOW_MODULE is not set and nextflow is not already available" >&2
+        module spider Nextflow >&2 || true
+        exit 1
+    fi
+
+    echo "INFO: Loading Nextflow module: ${NEXTFLOW_MODULE}" >&2
+    module load "${NEXTFLOW_MODULE}" || {
+        echo "ERROR: Failed to load ${NEXTFLOW_MODULE}" >&2
+        module spider Nextflow >&2 || true
+        exit 1
+    }
+
+    command -v nextflow >/dev/null 2>&1 || {
+        echo "ERROR: nextflow not found after loading ${NEXTFLOW_MODULE}" >&2
+        exit 1
+    }
+
+    echo "INFO: Nextflow executable: $(command -v nextflow)" >&2
+    nextflow -version
+}
 
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
     repo_dir="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
@@ -191,15 +221,7 @@ run_numt_nextflow() {
     log "  NUMT work dir=${numt_batch_work_dir}"
     log "  NUMT concurrency/queue size=${NUMT_CONCURRENT}"
 
-    if [[ -n "${NEXTFLOW_MODULE}" ]]; then
-        log "  loading Nextflow module: ${NEXTFLOW_MODULE}"
-        module load "${NEXTFLOW_MODULE}"
-    else
-        log "  NEXTFLOW_MODULE is not set; using nextflow from current environment"
-    fi
-    command -v nextflow >/dev/null 2>&1 || fail "nextflow not found; set NEXTFLOW_MODULE to the cluster-specific module name or add nextflow to PATH"
-    log "  nextflow=$(command -v nextflow)"
-    nextflow -version
+    load_nextflow
 
     log "Removing stale NUMT Nextflow metadata files for ${batch_id}"
     rm -f "${numt_batch_dir}/nextflow.trace.tsv" \
@@ -282,6 +304,7 @@ run_chain() {
         OUTPUT_DIR="${PRE_OUTPUT_DIR}" \
         NF_BASE_WORK_DIR="${PRE_NF_BASE_WORK_DIR}" \
         NF_CONFIG_FILE="${NF_CONFIG_FILE}" \
+        NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" \
         DEFER_WORK_DIR_CLEANUP=1 \
         bash "${PRE_LAUNCH_SCRIPT}"
     validate_pre_to_round1 "${batch_file}" || fail "Preprocessing outputs are incomplete for ${batch_file}"
@@ -306,7 +329,7 @@ run_chain() {
         log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
         log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
         log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
-        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND1_LAUNCH_SCRIPT}"
+        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND1_LAUNCH_SCRIPT}"
         validate_round1_to_round2 "${batch_file}" || fail "Round 1 outputs are incomplete for ${batch_file}"
         cleanup_work_dir_if_requested "round1_${batch_name}" "${round1_batch_work_dir}"
     fi
@@ -320,7 +343,7 @@ run_chain() {
         log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
         log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
         log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
-        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND2_LAUNCH_SCRIPT}"
+        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND2_LAUNCH_SCRIPT}"
         validate_round2_final "${batch_file}" || fail "Round 2 outputs are incomplete for ${batch_file}"
         cleanup_work_dir_if_requested "round2_${batch_name}" "${round2_batch_work_dir}"
     fi
