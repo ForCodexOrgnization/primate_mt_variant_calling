@@ -45,6 +45,7 @@ BATCH_LIST_DIR="${BATCH_LIST_DIR:-${NF_BASE_WORK_DIR}/batch_lists}"
 NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-true}"
+NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -71,6 +72,7 @@ echo "INFO: NF_CONFIG_FILE=${NF_CONFIG_FILE}"
 echo "INFO: NF_CONFIG_PATH=${NF_CONFIG_PATH}"
 echo "INFO: CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}"
 echo "INFO: ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT}"
+echo "INFO: NEXTFLOW_MODULE=${NEXTFLOW_MODULE:-<none>}"
 
 cleanup_work_dir_if_requested() {
     local stage_name="$1"
@@ -189,8 +191,13 @@ run_numt_nextflow() {
     log "  NUMT work dir=${numt_batch_work_dir}"
     log "  NUMT concurrency/queue size=${NUMT_CONCURRENT}"
 
-    module load Nextflow/24.10.2 || module load Nextflow/24.04.4
-    command -v nextflow >/dev/null 2>&1 || fail "nextflow not found after loading Nextflow module"
+    if [[ -n "${NEXTFLOW_MODULE}" ]]; then
+        log "  loading Nextflow module: ${NEXTFLOW_MODULE}"
+        module load "${NEXTFLOW_MODULE}"
+    else
+        log "  NEXTFLOW_MODULE is not set; using nextflow from current environment"
+    fi
+    command -v nextflow >/dev/null 2>&1 || fail "nextflow not found; set NEXTFLOW_MODULE to the cluster-specific module name or add nextflow to PATH"
     log "  nextflow=$(command -v nextflow)"
     nextflow -version
 
