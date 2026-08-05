@@ -33,9 +33,9 @@ ROUND2_LAUNCH_SCRIPT="${ROUND2_LAUNCH_SCRIPT:-launch_pipeline_round2.sh}"
 
 NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR}/numt_discovery}"
 NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
-REF_DIR="${REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
-GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
-NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/nuclear_only_refs}"
+REF_DIR="${REF_DIR:-}"
+GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-}"
+NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-}"
 BATCH_SIZE="${BATCH_SIZE:-10}"
 CHAIN_CONCURRENT_BATCHES="${CHAIN_CONCURRENT_BATCHES:-3}"
 NUMT_CONCURRENT="${NUMT_CONCURRENT:-${CONCURRENT:-${CHAIN_CONCURRENT_BATCHES}}}"
@@ -197,9 +197,6 @@ END {
 SAMPLES_TSV=${clean_samples}
 CRAM_ROOT_1=${PRE_OUTPUT_DIR}
 CRAM_ROOT_2=${PRE_OUTPUT_DIR}
-WHOLE_REF_DIR=${GLOBAL_REF_DIR}
-NUCLEAR_ONLY_REF_DIR=${NUCLEAR_ONLY_REF_DIR}
-CHRM_REF_DIR=${REF_DIR}
 DISCOVERY_OUTROOT=${NUMT_DISCOVERY_OUTROOT}
 BESTHIT_OUTDIR=${NUMT_BESTHIT_OUTDIR}
 CONFIG
@@ -228,7 +225,7 @@ run_numt_nextflow() {
           "${numt_batch_dir}/nextflow.report.html" \
           "${numt_batch_dir}/nextflow.timeline.html"
 
-    NXF_OPTS="${NXF_OPTS:-}" nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_LAUNCH_SCRIPT}" \
+    NF_CONFIG_PATH="${NF_CONFIG_PATH}" NXF_OPTS="${NXF_OPTS:-}" nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_LAUNCH_SCRIPT}" \
         -profile cluster \
         -work-dir "${numt_batch_work_dir}" \
         -with-report "${numt_batch_dir}/nextflow.report.html" \

@@ -19,6 +19,25 @@ def readShellConfigValue = { String configPath, String key ->
     return value
 }
 
+def resolvedChrMRefDir = System.getenv('REF_DIR') ?: params.ref_dir
+def resolvedWholeRefDir = System.getenv('GLOBAL_REF_DIR') ?: params.global_ref_dir
+def resolvedNuclearOnlyRefDir = System.getenv('NUCLEAR_ONLY_REF_DIR') ?: params.nuclear_only_ref_dir
+
+if (!resolvedChrMRefDir) {
+    error "REF_DIR/params.ref_dir is not configured"
+}
+if (!resolvedWholeRefDir) {
+    error "GLOBAL_REF_DIR/params.global_ref_dir is not configured"
+}
+if (!resolvedNuclearOnlyRefDir) {
+    error "NUCLEAR_ONLY_REF_DIR/params.nuclear_only_ref_dir is not configured"
+}
+
+log.info "INFO: NUMT CHRM_REF_DIR=${resolvedChrMRefDir}"
+log.info "INFO: NUMT WHOLE_REF_DIR=${resolvedWholeRefDir}"
+log.info "INFO: NUMT NUCLEAR_ONLY_REF_DIR=${resolvedNuclearOnlyRefDir}"
+log.info "INFO: NF_CONFIG_PATH=${System.getenv('NF_CONFIG_PATH') ?: System.getenv('NXF_CONFIG_FILE') ?: System.getenv('NF_CONFIG_FILE') ?: '<unknown>'}"
+
 def configuredSample = readShellConfigValue(params.numt_config.toString(), 'SAMPLE') ?: readShellConfigValue(params.numt_config.toString(), 'SAMPLE_ID')
 def configuredSpecies = readShellConfigValue(params.numt_config.toString(), 'SPECIES_NAME') ?: readShellConfigValue(params.numt_config.toString(), 'REF_NAME')
 def configuredRef = readShellConfigValue(params.numt_config.toString(), 'REF_NAME') ?: configuredSpecies
@@ -64,8 +83,8 @@ process RUN_NUMT_END2END {
 
         echo "[\$(date)] NUMT attempt \${attempt} failed with exit code \${status} for \${sample}" >&2
 
-        if [[ "\${status}" -eq 1 && "\${attempt}" -lt "\${max_attempts}" ]]; then
-          echo "[\$(date)] Retrying \${sample} once for possible transient filesystem failure." >&2
+        if [[ ( "\${status}" -eq 137 || "\${status}" -eq 143 ) && "\${attempt}" -lt "\${max_attempts}" ]]; then
+          echo "[\$(date)] Retrying \${sample} for possible transient/preemption failure." >&2
           rm -f "\${discovery_dir}/\${sample}.numt_discovery.done"
           rm -rf "\${discovery_dir}/intermediate" "\${discovery_dir}/tmp"
           attempt=\$((attempt + 1))
@@ -81,6 +100,11 @@ process RUN_NUMT_END2END {
 
     # shellcheck disable=SC1090
     source ${numt_config}
+
+    WHOLE_REF_DIR='${resolvedWholeRefDir}'
+    NUCLEAR_ONLY_REF_DIR='${resolvedNuclearOnlyRefDir}'
+    CHRM_REF_DIR='${resolvedChrMRefDir}'
+    export WHOLE_REF_DIR NUCLEAR_ONLY_REF_DIR CHRM_REF_DIR
 
     SAMPLE_ID='${sample_id}'
     BESTHIT_DIR="\${BESTHIT_OUTDIR:-/nfs/roberts/pi/pi_njl27/lt692/primate_results_numt_besthit}"
@@ -107,9 +131,9 @@ process RUN_NUMT_END2END {
 
     : "\${CRAM_ROOT_1:?missing CRAM_ROOT_1 in config}"
     : "\${CRAM_ROOT_2:?missing CRAM_ROOT_2 in config}"
-    : "\${WHOLE_REF_DIR:?missing WHOLE_REF_DIR in config}"
-    : "\${NUCLEAR_ONLY_REF_DIR:?missing NUCLEAR_ONLY_REF_DIR in config}"
-    : "\${CHRM_REF_DIR:?missing CHRM_REF_DIR in config}"
+    : "\${WHOLE_REF_DIR:?required config variable missing: WHOLE_REF_DIR}"
+    : "\${NUCLEAR_ONLY_REF_DIR:?required config variable missing: NUCLEAR_ONLY_REF_DIR}"
+    : "\${CHRM_REF_DIR:?required config variable missing: CHRM_REF_DIR}"
     : "\${DISCOVERY_OUTROOT:?missing DISCOVERY_OUTROOT in config}"
     : "\${BESTHIT_OUTDIR:?missing BESTHIT_OUTDIR in config}"
 
@@ -141,12 +165,24 @@ process RUN_NUMT_END2END {
       return 1
     }
 
+    log_missing_ref() {
+      local label="\$1" dir="\$2" name="\$3" suffix
+      shift 3
+      echo "ERROR: \${label} ref missing for \${name} under \${dir}" >&2
+      echo "INFO: Candidate filenames checked:" >&2
+      for suffix in "\$@"; do
+        printf '%s\n' "\${dir}/\${name}\${suffix}" >&2
+      done
+      echo "INFO: Similar files found:" >&2
+      find "\${dir}" -maxdepth 1 -iname "*\${name%%_*}*" -printf '%f\n' 2>/dev/null | head -n 20 >&2
+    }
+
     REAL_SPECIES='${real_species}'
     REF_SPECIES='${refSpecies}'
 
     CRAM="\$(resolve_cram_in_root "\${SAMPLE_ID}" "\${CRAM_ROOT_1}")"
     [[ -n "\${CRAM}" ]] || CRAM="\$(resolve_cram_in_root "\${SAMPLE_ID}" "\${CRAM_ROOT_2}")"
-    [[ -n "\${CRAM}" ]] || { echo "ERROR: CRAM not found for \${SAMPLE_ID}" >&2; exit 1; }
+    [[ -n "\${CRAM}" ]] || { echo "ERROR: CRAM not found for \${SAMPLE_ID}" >&2; exit 2; }
 
     if [[ -f "\${CRAM}.crai" ]]; then
       CRAI="\${CRAM}.crai"
@@ -154,16 +190,22 @@ process RUN_NUMT_END2END {
       CRAI="\${CRAM%.cram}.cram.crai"
     else
       echo "ERROR: CRAI not found for \${CRAM}" >&2
-      exit 1
+      exit 2
     fi
 
-    WGS_REF="\$(find_ref "\${WHOLE_REF_DIR}" "\${REF_SPECIES}" ".fasta" ".fa" ".fna")" || { echo "ERROR: WGS ref missing for \${REF_SPECIES} under \${WHOLE_REF_DIR}" >&2; exit 1; }
-    NUCLEAR_REF="\$(find_ref "\${NUCLEAR_ONLY_REF_DIR}" "\${REF_SPECIES}" ".fasta" ".fa" ".fna" ".nuclear_only.fasta" ".nuclear_only.fa" ".nuclear_only.fna")" || { echo "ERROR: nuclear ref missing for \${REF_SPECIES} under \${NUCLEAR_ONLY_REF_DIR}" >&2; exit 1; }
+    WGS_REF="\$(find_ref "\${WHOLE_REF_DIR}" "\${REF_SPECIES}" ".fasta" ".fa" ".fna")" || { log_missing_ref "WGS" "\${WHOLE_REF_DIR}" "\${REF_SPECIES}" ".fasta" ".fa" ".fna"; exit 2; }
+    NUCLEAR_REF="\$(find_ref "\${NUCLEAR_ONLY_REF_DIR}" "\${REF_SPECIES}" ".fasta" ".fa" ".fna" ".nuclear_only.fasta" ".nuclear_only.fa" ".nuclear_only.fna")" || { log_missing_ref "nuclear" "\${NUCLEAR_ONLY_REF_DIR}" "\${REF_SPECIES}" ".fasta" ".fa" ".fna" ".nuclear_only.fasta" ".nuclear_only.fa" ".nuclear_only.fna"; exit 2; }
+
+    echo "INFO: sample=\${SAMPLE_ID}"
+    echo "INFO: real_species=\${REAL_SPECIES}"
+    echo "INFO: ref_species=\${REF_SPECIES}"
+    echo "INFO: WGS_REF=\${WGS_REF}"
+    echo "INFO: NUCLEAR_REF=\${NUCLEAR_REF}"
 
     samtools faidx "\${WGS_REF}" >/dev/null 2>&1 || true
     MT_CONTIG="\${MT_CONTIG:-chrM}"
     MT_LENGTH="\$(awk -v mt="\${MT_CONTIG}" '\$1==mt{print \$2; exit}' "\${WGS_REF}.fai")"
-    [[ -n "\${MT_LENGTH}" ]] || { echo "ERROR: mt contig \${MT_CONTIG} not found in \${WGS_REF}.fai" >&2; exit 1; }
+    [[ -n "\${MT_LENGTH}" ]] || { echo "ERROR: mt contig \${MT_CONTIG} not found in \${WGS_REF}.fai" >&2; exit 2; }
 
     SAMPLE_DISCOVERY_OUTDIR="\${DISCOVERY_OUTROOT}/\${SAMPLE_ID}"
     TMP_CFG="\$(mktemp "\${TMPDIR:-/tmp}/\${SAMPLE_ID}.numtcfg.XXXXXX")"
@@ -179,6 +221,7 @@ MT_LENGTH=\${MT_LENGTH}
 DISCOVERY_OUTDIR=\${SAMPLE_DISCOVERY_OUTDIR}
 SAMPLES_TSV=\${SAMPLES_TSV:-}
 WHOLE_REF_DIR=\${WHOLE_REF_DIR}
+NUCLEAR_ONLY_REF_DIR=\${NUCLEAR_ONLY_REF_DIR}
 CHRM_REF_DIR=\${CHRM_REF_DIR}
 BESTHIT_OUTDIR=\${BESTHIT_OUTDIR}
 CFG
