@@ -38,17 +38,30 @@ handle_requeue() {
     exit 0
 }
 
-trap handle_requeue USR1
+if [[ "${CHAIN_MANAGED_REQUEUE:-0}" != "1" ]]; then
+    trap handle_requeue USR1
+else
+    echo "INFO: Requeue is managed by launch_pipeline_all_per_batch.sh"
+fi
 
 run_nextflow() {
+    local nf_cmd=(
+        nextflow
+        run "${SUBMIT_DIR}/preprocessing.nf"
+        -c "${NF_CONFIG_PATH}"
+        -profile cluster
+        -resume
+        -w "${WORK_DIR}"
+        --sample_tsv "${ACTIVE_BATCH_FILE}"
+        --outdir "${OUTPUT_DIR}"
+        --enable_chunked_alignment "${ENABLE_CHUNKED_ALIGNMENT:-true}"
+        --skip_existing_cram "${SKIP_EXISTING_CRAM:-true}"
+        --force_reprocess_existing_cram "${FORCE_REPROCESS_EXISTING_CRAM:-false}"
+        --samtools_bin "${SAMTOOLS_BIN:-samtools}"
+    )
+
     set +e
-    nextflow run "${SUBMIT_DIR}/preprocessing.nf" \
-        -c "${NF_CONFIG_PATH}" -profile cluster -resume -w "${WORK_DIR}" \
-        --sample_tsv "${ACTIVE_BATCH_FILE}" --outdir "${OUTPUT_DIR}" \
-        --enable_chunked_alignment "${ENABLE_CHUNKED_ALIGNMENT:-true}" \
-        --skip_existing_cram "${SKIP_EXISTING_CRAM:-true}" \
-        --force_reprocess_existing_cram "${FORCE_REPROCESS_EXISTING_CRAM:-false}" \
-        --samtools_bin "${SAMTOOLS_BIN:-samtools}" &
+    "${nf_cmd[@]}" &
     NEXTFLOW_PID=$!
     wait "${NEXTFLOW_PID}"
     local status=$?
@@ -56,7 +69,6 @@ run_nextflow() {
     set -e
     return "${status}"
 }
-
 verify_batch_outputs() {
     local verify_exit=0 sample_id species ref_name cram_path crai_path marker_path
     while IFS=$'\t' read -r sample_id species ref_name _; do
@@ -146,6 +158,11 @@ if [ -n "${BATCH_FILE:-}" ]; then
     cd "${WORK_DIR}"
 
     NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)"
+    echo "INFO: CHAIN_MANAGED_REQUEUE=${CHAIN_MANAGED_REQUEUE:-0}"
+    echo "INFO: Persistent Nextflow work directory=${WORK_DIR}"
+    echo "INFO: Nextflow resume enabled"
+    echo "INFO: BATCH_FILE=${ACTIVE_BATCH_FILE}"
+    echo "INFO: BATCH_ID=${ACTIVE_BATCH_ID}"
     echo "INFO: Processing fixed batch file: ${ACTIVE_BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
     echo "INFO: ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT:-true}"
@@ -233,6 +250,11 @@ else
     ACTIVE_BATCH_ID="${RUN_DIR}"
     NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${SUBMIT_DIR}/${NF_CONFIG_FILE}"; fi)"
 
+    echo "INFO: CHAIN_MANAGED_REQUEUE=${CHAIN_MANAGED_REQUEUE:-0}"
+    echo "INFO: Persistent Nextflow work directory=${WORK_DIR}"
+    echo "INFO: Nextflow resume enabled"
+    echo "INFO: BATCH_FILE=${ACTIVE_BATCH_FILE}"
+    echo "INFO: BATCH_ID=${ACTIVE_BATCH_ID}"
     echo "INFO: This task will process batch file: ${BATCH_FILE}"
     echo "INFO: Using persistent Nextflow work directory: ${WORK_DIR}"
     echo "INFO: ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT:-true}"
