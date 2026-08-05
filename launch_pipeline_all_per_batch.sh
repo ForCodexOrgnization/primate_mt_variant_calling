@@ -3,6 +3,8 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 #SBATCH --time=24:00:00
+#SBATCH --requeue
+#SBATCH --signal=B:USR1@300
 #SBATCH --output=log_all_per_batch/nf_chain_%A_%a.log
 
 set -euo pipefail
@@ -48,8 +50,90 @@ ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-true}"
 NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
 export NEXTFLOW_MODULE
 
+ACTIVE_CHILD_PID=""
+ACTIVE_STAGE=""
+REQUEUE_IN_PROGRESS=0
+
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
+
+current_slurm_element_id() {
+    if [[ -n "${SLURM_ARRAY_JOB_ID:-}" &&
+          -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+        printf '%s_%s\n' \
+            "${SLURM_ARRAY_JOB_ID}" \
+            "${SLURM_ARRAY_TASK_ID}"
+    else
+        printf '%s\n' "${SLURM_JOB_ID:-}"
+    fi
+}
+
+run_child_stage() {
+    local stage_name="$1"
+    shift
+
+    ACTIVE_STAGE="${stage_name}"
+
+    "$@" &
+    ACTIVE_CHILD_PID=$!
+
+    set +e
+    wait "${ACTIVE_CHILD_PID}"
+    local rc=$?
+    set -e
+
+    ACTIVE_CHILD_PID=""
+    ACTIVE_STAGE=""
+
+    return "${rc}"
+}
+
+handle_chain_requeue() {
+    if [[ "${REQUEUE_IN_PROGRESS}" == 1 ]]; then
+        return
+    fi
+    REQUEUE_IN_PROGRESS=1
+
+    local element_id
+    element_id="$(current_slurm_element_id)"
+
+    log "INFO: Received USR1 before walltime"
+    log "INFO: Active stage=${ACTIVE_STAGE:-none}"
+    log "INFO: Preserving NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
+    log "INFO: Requeueing array element=${element_id}"
+
+    if [[ -n "${ACTIVE_CHILD_PID}" ]] &&
+       kill -0 "${ACTIVE_CHILD_PID}" 2>/dev/null; then
+
+        kill -TERM "${ACTIVE_CHILD_PID}" 2>/dev/null || true
+
+        for _ in $(seq 1 60); do
+            kill -0 "${ACTIVE_CHILD_PID}" 2>/dev/null || break
+            sleep 2
+        done
+
+        if kill -0 "${ACTIVE_CHILD_PID}" 2>/dev/null; then
+            kill -KILL "${ACTIVE_CHILD_PID}" 2>/dev/null || true
+        fi
+
+        wait "${ACTIVE_CHILD_PID}" 2>/dev/null || true
+        ACTIVE_CHILD_PID=""
+    fi
+
+    [[ -n "${element_id}" ]] || {
+        log "ERROR: Cannot determine Slurm job/array element ID"
+        exit 75
+    }
+
+    scontrol requeue "${element_id}" || {
+        log "ERROR: Failed to requeue ${element_id}"
+        exit 75
+    }
+
+    exit 0
+}
+
+trap handle_chain_requeue USR1
 
 load_nextflow() {
     if command -v nextflow >/dev/null 2>&1; then
@@ -220,19 +304,23 @@ run_numt_nextflow() {
 
     load_nextflow
 
-    log "Removing stale NUMT Nextflow metadata files for ${batch_id}"
-    rm -f "${numt_batch_dir}/nextflow.trace.tsv" \
-          "${numt_batch_dir}/nextflow.report.html" \
-          "${numt_batch_dir}/nextflow.timeline.html"
-
-    NF_CONFIG_PATH="${NF_CONFIG_PATH}" NXF_OPTS="${NXF_OPTS:-}" nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_LAUNCH_SCRIPT}" \
-        -profile cluster \
-        -work-dir "${numt_batch_work_dir}" \
-        -with-report "${numt_batch_dir}/nextflow.report.html" \
-        -with-timeline "${numt_batch_dir}/nextflow.timeline.html" \
-        -with-trace "${numt_batch_dir}/nextflow.trace.tsv" \
-        -queue-size "${NUMT_CONCURRENT}" \
+    local numt_cmd=(
+        nextflow
+        -C "${NF_CONFIG_PATH}"
+        run "${NUMT_LAUNCH_SCRIPT}"
+        -profile cluster
+        -work-dir "${numt_batch_work_dir}"
+        -with-report "${numt_batch_dir}/nextflow.report.html"
+        -with-timeline "${numt_batch_dir}/nextflow.timeline.html"
+        -with-trace "${numt_batch_dir}/nextflow.trace.tsv"
+        -queue-size "${NUMT_CONCURRENT}"
         --numt_config "${auto_config}"
+    )
+
+    run_child_stage numt env \
+        NF_CONFIG_PATH="${NF_CONFIG_PATH}" \
+        NXF_OPTS="${NXF_OPTS:-}" \
+        "${numt_cmd[@]}"
 }
 
 validate_pre_to_round1() {
@@ -293,7 +381,7 @@ run_chain() {
     local round2_batch_work_dir="${ROUND2_NF_BASE_WORK_DIR}/${batch_name}"
 
     log "Starting per-batch chain ${batch_id}: ${batch_file}"
-    env \
+    run_child_stage pre env \
         ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT}" \
         BATCH_FILE="${batch_file}" \
         BATCH_ID="${batch_name}" \
@@ -303,6 +391,7 @@ run_chain() {
         NF_CONFIG_FILE="${NF_CONFIG_FILE}" \
         NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" \
         DEFER_WORK_DIR_CLEANUP=1 \
+        CHAIN_MANAGED_REQUEUE=1 \
         bash "${PRE_LAUNCH_SCRIPT}"
     validate_pre_to_round1 "${batch_file}" || fail "Preprocessing outputs are incomplete for ${batch_file}"
     cleanup_work_dir_if_requested "pre_${batch_name}" "${pre_batch_work_dir}"
@@ -326,7 +415,19 @@ run_chain() {
         log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
         log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
         log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
-        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND1_OUTDIR}" CRAM_DIRS="${PRE_OUTPUT_DIR}" NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND1_LAUNCH_SCRIPT}"
+        run_child_stage round1 env \
+            BATCH_FILE="${batch_file}" \
+            BATCH_ID="${batch_name}" \
+            FULL_SAMPLE_LIST="${batch_file}" \
+            OUTPUT_DIR="${ROUND1_OUTDIR}" \
+            CRAM_DIRS="${PRE_OUTPUT_DIR}" \
+            NUMT_BED_DIR="${NUMT_BESTHIT_OUTDIR}" \
+            NF_BASE_WORK_DIR="${ROUND1_NF_BASE_WORK_DIR}" \
+            NF_CONFIG_FILE="${NF_CONFIG_FILE}" \
+            NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" \
+            DEFER_WORK_DIR_CLEANUP=1 \
+            CHAIN_MANAGED_REQUEUE=1 \
+            bash "${ROUND1_LAUNCH_SCRIPT}"
         validate_round1_to_round2 "${batch_file}" || fail "Round 1 outputs are incomplete for ${batch_file}"
         cleanup_work_dir_if_requested "round1_${batch_name}" "${round1_batch_work_dir}"
     fi
@@ -340,7 +441,18 @@ run_chain() {
         log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
         log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
         log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
-        env BATCH_FILE="${batch_file}" BATCH_ID="${batch_name}" FULL_SAMPLE_LIST="${batch_file}" OUTPUT_DIR="${ROUND_OUTPUT_DIR}" ROUND1_OUTDIR="${ROUND1_OUTDIR}" NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" NF_CONFIG_FILE="${NF_CONFIG_FILE}" NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" DEFER_WORK_DIR_CLEANUP=1 bash "${ROUND2_LAUNCH_SCRIPT}"
+        run_child_stage round2 env \
+            BATCH_FILE="${batch_file}" \
+            BATCH_ID="${batch_name}" \
+            FULL_SAMPLE_LIST="${batch_file}" \
+            OUTPUT_DIR="${ROUND_OUTPUT_DIR}" \
+            ROUND1_OUTDIR="${ROUND1_OUTDIR}" \
+            NF_BASE_WORK_DIR="${ROUND2_NF_BASE_WORK_DIR}" \
+            NF_CONFIG_FILE="${NF_CONFIG_FILE}" \
+            NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" \
+            DEFER_WORK_DIR_CLEANUP=1 \
+            CHAIN_MANAGED_REQUEUE=1 \
+            bash "${ROUND2_LAUNCH_SCRIPT}"
         validate_round2_final "${batch_file}" || fail "Round 2 outputs are incomplete for ${batch_file}"
         cleanup_work_dir_if_requested "round2_${batch_name}" "${round2_batch_work_dir}"
     fi
