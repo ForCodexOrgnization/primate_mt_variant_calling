@@ -11,7 +11,8 @@ assert "#SBATCH --time=24:00:00" in chain
 assert "#SBATCH --requeue" in chain
 assert "#SBATCH --signal=B:USR1@300" in chain
 
-for token in ('ACTIVE_CHILD_PID=""', 'ACTIVE_STAGE=""', 'REQUEUE_IN_PROGRESS=0'):
+for token in ('ACTIVE_CHILD_PID=""', 'ACTIVE_STAGE=""', 'ACTIVE_BATCH_NAME=""',
+              'ACTIVE_BATCH_FILE=""', 'ACTIVE_STAGE_LOG=""', 'REQUEUE_IN_PROGRESS=0'):
     assert token in chain, token
 
 for fn in ("current_slurm_element_id()", "run_child_stage()", "handle_chain_requeue()"):
@@ -19,7 +20,7 @@ for fn in ("current_slurm_element_id()", "run_child_stage()", "handle_chain_requ
 handler = chain[chain.index("handle_chain_requeue()") : chain.index("trap handle_chain_requeue USR1")]
 for token in (
     'if [[ "${REQUEUE_IN_PROGRESS}" == 1 ]]',
-    'log "INFO: Active stage=${ACTIVE_STAGE:-none}"',
+    'log "INFO: ACTIVE_STAGE=${ACTIVE_STAGE:-none}"',
     'log "INFO: Preserving NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"',
     'kill -TERM "${ACTIVE_CHILD_PID}"',
     'for _ in $(seq 1 60)',
@@ -32,9 +33,9 @@ for token in (
 assert "cleanup_work_dir_if_requested" not in handler
 
 for stage in ("pre", "numt", "round1", "round2"):
-    assert f"run_child_stage {stage}" in chain, stage
+    assert re.search(rf"run_child_stage {stage} \"\$\{{LOG_DIR\}}/.*?\.{stage}\.log\"", chain), stage
 
-pre_call = re.search(r"run_child_stage pre env \\\n(?P<body>.*?)bash \"\$\{PRE_LAUNCH_SCRIPT\}\"", chain, re.S).group("body")
+pre_call = re.search(r"run_child_stage pre .*? env \\\n(?P<body>.*?)bash \"\$\{PRE_LAUNCH_SCRIPT\}\"", chain, re.S).group("body")
 for token in (
     'BATCH_FILE="${batch_file}"',
     'BATCH_ID="${batch_name}"',
@@ -48,11 +49,11 @@ for token in (
 
 numt = chain[chain.index("run_numt_nextflow()") : chain.index("validate_pre_to_round1()")]
 assert "local numt_cmd=(" in numt
-assert "run_child_stage numt env" in numt
+assert "run_child_stage numt \"${LOG_DIR}/${batch_name}.numt.log\" env" in numt
 assert "rm -f" not in numt, "NUMT must not remove Nextflow cache metadata before retry"
 
 for stage, script_var in (("round1", "ROUND1_LAUNCH_SCRIPT"), ("round2", "ROUND2_LAUNCH_SCRIPT")):
-    start = chain.index(f"run_child_stage {stage} env")
+    start = chain.index(f"run_child_stage {stage} \"${{LOG_DIR}}/${{batch_name}}.{stage}.log\" env")
     end = chain.index(f'bash "${{{script_var}}}"', start)
     block = chain[start:end]
     assert "CHAIN_MANAGED_REQUEUE=1" in block

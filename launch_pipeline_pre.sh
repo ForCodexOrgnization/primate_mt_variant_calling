@@ -70,7 +70,13 @@ run_nextflow() {
     return "${status}"
 }
 verify_batch_outputs() {
-    local verify_exit=0 sample_id species ref_name cram_path crai_path marker_path
+    local verify_exit=0 sample_id species ref_name cram_path crai_path marker_path status
+    local failed_file="${FAILED_SAMPLES_FILE:-}" failed_tmp=""
+    if [[ -n "$failed_file" ]]; then
+        mkdir -p "$(dirname "$failed_file")"
+        failed_tmp="$(mktemp "$(dirname "$failed_file")/.failed_samples.XXXXXX")"
+        printf 'sample_id\tfailure_reason\texpected_cram\texpected_crai\tvalidation_time\n' > "$failed_tmp"
+    fi
     while IFS=$'\t' read -r sample_id species ref_name _; do
         [[ -n "${sample_id}" && "${sample_id}" != "sample" && "${sample_id}" != "sample_id" ]] || continue
         cram_path="${OUTPUT_DIR}/${sample_id}/alignment/${sample_id}.cram"
@@ -82,10 +88,21 @@ verify_batch_outputs() {
             :
         else
             status=$?
-            echo "ERROR: CRAM validator failed for ${sample_id} (status ${status}): ${cram_path}" >&2
+            echo "ERROR: CRAM_VALIDATION_FAILED for ${sample_id} (status ${status}): ${cram_path}" >&2
+            if [[ -n "$failed_tmp" ]]; then
+                printf '%s\t%s\t%s\t%s\t%s\n' "$sample_id" CRAM_VALIDATION_FAILED "$cram_path" "$crai_path" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$failed_tmp"
+            fi
             verify_exit=1
         fi
     done < "${ACTIVE_BATCH_FILE}"
+    if [[ -n "$failed_tmp" ]]; then
+        if (( verify_exit != 0 )); then
+            mv -f "$failed_tmp" "$failed_file"
+            echo "INFO: failed samples file=${failed_file}" >&2
+        else
+            rm -f "$failed_tmp" "$failed_file"
+        fi
+    fi
     return "${verify_exit}"
 }
 
