@@ -936,8 +936,23 @@ process SPLIT_FASTQ_CHUNKS {
     set -Eeuo pipefail
 
     cleanup_split_outputs() {
+        rc=\$?
+        trap - INT TERM HUP QUIT ERR
         echo "WARN: SPLIT_FASTQ_CHUNKS interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial chunks." >&2
+        {
+            echo "exit_code=\${rc}"
+            echo "timestamp=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo '--- df -h . ---'; df -h . || true
+            echo '--- df -ih . ---'; df -ih . || true
+            echo '--- du -sh . ---'; du -sh . || true
+            echo '--- quota -s ---'; quota -s || true
+            echo '--- ulimit -a ---'; ulimit -a || true
+            echo '--- partial chunk sizes ---'
+            find chunks -type f -printf '%p\\t%s\\n' 2>/dev/null || true
+        } > split_failure_diagnostics.txt 2>&1
+        find chunks -type f -printf '%p\\t%s\\n' 2>/dev/null > partial_chunks_sizes.tsv || true
         rm -rf chunks chunks.tsv chunk_ids.txt
+        return "\${rc}"
     }
 
     trap cleanup_split_outputs INT TERM HUP QUIT ERR

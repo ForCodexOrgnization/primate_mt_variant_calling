@@ -52,7 +52,16 @@ export NEXTFLOW_MODULE
 
 ACTIVE_CHILD_PID=""
 ACTIVE_STAGE=""
+ACTIVE_BATCH_NAME=""
+ACTIVE_BATCH_FILE=""
+ACTIVE_STAGE_LOG=""
 REQUEUE_IN_PROGRESS=0
+
+CLASSIFIED_FAILURE_CLASS="UNKNOWN"
+CLASSIFIED_FAILURE_REASON="UNKNOWN"
+CLASSIFIED_RESUME_RECOMMENDED=0
+CLASSIFIED_DEFER_RECOMMENDED=1
+CLASSIFIED_CLEANUP_AFTER_TERMINAL=1
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -68,23 +77,105 @@ current_slurm_element_id() {
     fi
 }
 
+status_time() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }
+
+write_batch_status_marker() {
+    local marker_kind="$1" stage="$2" status="$3" exit_code="$4"
+    local failure_class="$5" failure_reason="$6" resume="$7" defer="$8" cleanup="$9"
+    local stage_log="${10:-}" failed_samples="${11:-}" notes="${12:-}"
+    local status_dir="${NF_BASE_WORK_DIR}/batch_status"
+    local target="${status_dir}/${ACTIVE_BATCH_NAME}.${marker_kind}.tsv" tmp
+    mkdir -p "${status_dir}"
+    tmp="$(mktemp "${status_dir}/.${ACTIVE_BATCH_NAME}.${marker_kind}.XXXXXX")"
+    # One header and one record makes markers both human-readable and machine-safe.
+    printf '%b\n' 'wave_work_root\tbatch_name\tbatch_file\tstage\tstatus\texit_code\tfailure_class\tfailure_reason\tresume_recommended\tdefer_recommended\tcleanup_after_terminal\tslurm_job_id\tslurm_array_job_id\tslurm_array_task_id\tstart_time\tend_time\tstage_log\tfailed_samples_file\tnotes' > "${tmp}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${NF_BASE_WORK_DIR}" "${ACTIVE_BATCH_NAME}" "${ACTIVE_BATCH_FILE}" "$stage" "$status" "$exit_code" \
+        "$failure_class" "$failure_reason" "$resume" "$defer" "$cleanup" "${SLURM_JOB_ID:-}" \
+        "${SLURM_ARRAY_JOB_ID:-}" "${SLURM_ARRAY_TASK_ID:-}" "${BATCH_START_TIME:-$(status_time)}" \
+        "$(status_time)" "$stage_log" "$failed_samples" "${notes//$'\t'/ }" >> "${tmp}"
+    mv -f "${tmp}" "${target}"
+    log "INFO: failure marker written=${target}"
+}
+
+write_batch_complete_marker() {
+    write_batch_status_marker complete validation COMPLETE 0 NONE NONE 0 0 1 "${ACTIVE_STAGE_LOG}" "" "all batch outputs validated"
+    rm -f "${NF_BASE_WORK_DIR}/batch_status/${ACTIVE_BATCH_NAME}.failure.tsv"
+}
+
+write_batch_failure_marker() {
+    local rc="$1" failed_samples="${2:-}" notes="${3:-terminal incomplete batch may be deferred by manager}"
+    if [[ -z "$failed_samples" && -s "${NF_BASE_WORK_DIR}/batch_status/${ACTIVE_BATCH_NAME}.failed_samples.tsv" ]]; then
+        failed_samples="${NF_BASE_WORK_DIR}/batch_status/${ACTIVE_BATCH_NAME}.failed_samples.tsv"
+    fi
+    rm -f "${NF_BASE_WORK_DIR}/batch_status/${ACTIVE_BATCH_NAME}.complete.tsv"
+    write_batch_status_marker failure "${ACTIVE_STAGE:-unknown}" FAILED "$rc" \
+        "${CLASSIFIED_FAILURE_CLASS}" "${CLASSIFIED_FAILURE_REASON}" \
+        "${CLASSIFIED_RESUME_RECOMMENDED}" "${CLASSIFIED_DEFER_RECOMMENDED}" \
+        "${CLASSIFIED_CLEANUP_AFTER_TERMINAL}" "${ACTIVE_STAGE_LOG}" "$failed_samples" "$notes"
+    log "INFO: terminal incomplete batch may be deferred by manager"
+}
+
+classify_stage_failure() {
+    local stage="$1" rc="$2" log_file="$3" states="" text=""
+    [[ -r "$log_file" ]] && text="$(cat "$log_file")"
+    if command -v sacct >/dev/null 2>&1 && [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        states="$(sacct -j "${SLURM_JOB_ID}" --format=State --noheader 2>/dev/null || true)"
+    fi
+    CLASSIFIED_FAILURE_CLASS=UNKNOWN; CLASSIFIED_FAILURE_REASON=UNKNOWN
+    CLASSIFIED_RESUME_RECOMMENDED=0; CLASSIFIED_DEFER_RECOMMENDED=1; CLASSIFIED_CLEANUP_AFTER_TERMINAL=1
+    if [[ "$text" =~ CRAM_VALIDATION_FAILED ]]; then
+        CLASSIFIED_FAILURE_CLASS=OUTPUT_INCOMPLETE; CLASSIFIED_FAILURE_REASON=CRAM_VALIDATION_FAILED
+    elif [[ "$stage" == requeue || "$text" =~ (USR1|[Rr]equeue) ]]; then
+        CLASSIFIED_FAILURE_CLASS=INFRASTRUCTURE; CLASSIFIED_FAILURE_REASON=TIMEOUT_SIGNAL
+        CLASSIFIED_RESUME_RECOMMENDED=1; CLASSIFIED_DEFER_RECOMMENDED=0; CLASSIFIED_CLEANUP_AFTER_TERMINAL=0
+    elif [[ "$states" =~ (TIMEOUT|PREEMPTED|NODE_FAIL|BOOT_FAIL) ]]; then
+        CLASSIFIED_FAILURE_CLASS=INFRASTRUCTURE; CLASSIFIED_FAILURE_REASON="${BASH_REMATCH[1]}"
+        CLASSIFIED_RESUME_RECOMMENDED=1; CLASSIFIED_DEFER_RECOMMENDED=0; CLASSIFIED_CLEANUP_AFTER_TERMINAL=0
+    elif [[ "$text" =~ No\ space\ left\ on\ device ]]; then
+        CLASSIFIED_FAILURE_CLASS=TRANSIENT_IO; CLASSIFIED_FAILURE_REASON=NO_SPACE; CLASSIFIED_RESUME_RECOMMENDED=1
+    elif [[ "$text" =~ Disk\ quota\ exceeded ]]; then
+        CLASSIFIED_FAILURE_CLASS=TRANSIENT_IO; CLASSIFIED_FAILURE_REASON=QUOTA_EXCEEDED; CLASSIFIED_RESUME_RECOMMENDED=1
+    elif [[ "$text" =~ (Input/output\ error|Transport\ endpoint\ is\ not\ connected) ]]; then
+        CLASSIFIED_FAILURE_CLASS=TRANSIENT_IO; CLASSIFIED_FAILURE_REASON=IO_ERROR; CLASSIFIED_RESUME_RECOMMENDED=1
+    elif [[ "$text" =~ Read-only\ file\ system ]]; then
+        CLASSIFIED_FAILURE_CLASS=TRANSIENT_IO; CLASSIFIED_FAILURE_REASON=READ_ONLY_FILESYSTEM; CLASSIFIED_RESUME_RECOMMENDED=1
+    elif [[ "$text" =~ Stale\ file\ handle ]]; then
+        CLASSIFIED_FAILURE_CLASS=TRANSIENT_IO; CLASSIFIED_FAILURE_REASON=STALE_FILE_HANDLE; CLASSIFIED_RESUME_RECOMMENDED=1
+    elif [[ "$text" =~ (unexpected\ end\ of\ file|CRC\ error|invalid\ compressed\ data|truncated\ FASTQ|corrupt\ FASTQ|invalid\ CRAM|samtools\ quickcheck\ failed) ]]; then
+        CLASSIFIED_FAILURE_CLASS=BAD_INPUT; CLASSIFIED_FAILURE_REASON=CORRUPT_INPUT
+    elif [[ "$text" =~ (WGS\ ref\ missing|missing\ reference|reference\ not\ found|unsupported\ species|unsupported\ reference|malformed\ sample\ row|invalid\ metadata) ]]; then
+        CLASSIFIED_FAILURE_CLASS=DETERMINISTIC; CLASSIFIED_FAILURE_REASON=INVALID_CONFIGURATION
+    fi
+    log "INFO: failure_class=${CLASSIFIED_FAILURE_CLASS}"
+    log "INFO: failure_reason=${CLASSIFIED_FAILURE_REASON}"
+    log "INFO: resume_recommended=${CLASSIFIED_RESUME_RECOMMENDED}"
+    log "INFO: defer_recommended=${CLASSIFIED_DEFER_RECOMMENDED}"
+    log "INFO: cleanup_after_terminal=${CLASSIFIED_CLEANUP_AFTER_TERMINAL}"
+}
+
 run_child_stage() {
-    local stage_name="$1"
-    shift
+    local stage_name="$1" stage_log="$2"
+    shift 2
 
     ACTIVE_STAGE="${stage_name}"
-
-    "$@" &
-    ACTIVE_CHILD_PID=$!
+    ACTIVE_STAGE_LOG="${stage_log}"
+    mkdir -p "$(dirname "${stage_log}")"
+    log "INFO: ACTIVE_STAGE=${ACTIVE_STAGE}"
 
     set +e
+    "$@" > >(tee -a "${stage_log}") 2> >(tee -a "${stage_log}" >&2) &
+    ACTIVE_CHILD_PID=$!
     wait "${ACTIVE_CHILD_PID}"
     local rc=$?
     set -e
 
     ACTIVE_CHILD_PID=""
-    ACTIVE_STAGE=""
-
+    if (( rc != 0 )); then
+        classify_stage_failure "${stage_name}" "${rc}" "${stage_log}"
+        write_batch_failure_marker "${rc}"
+    fi
+    ACTIVE_STAGE=""; ACTIVE_STAGE_LOG=""
     return "${rc}"
 }
 
@@ -98,9 +189,18 @@ handle_chain_requeue() {
     element_id="$(current_slurm_element_id)"
 
     log "INFO: Received USR1 before walltime"
-    log "INFO: Active stage=${ACTIVE_STAGE:-none}"
+    log "INFO: ACTIVE_BATCH_NAME=${ACTIVE_BATCH_NAME:-none}"
+    log "INFO: ACTIVE_STAGE=${ACTIVE_STAGE:-none}"
     log "INFO: Preserving NF_BASE_WORK_DIR=${NF_BASE_WORK_DIR}"
     log "INFO: Requeueing array element=${element_id}"
+    if [[ -n "${ACTIVE_BATCH_NAME}" ]]; then
+        ACTIVE_STAGE=requeue
+        CLASSIFIED_FAILURE_CLASS=INFRASTRUCTURE; CLASSIFIED_FAILURE_REASON=TIMEOUT_SIGNAL
+        CLASSIFIED_RESUME_RECOMMENDED=1; CLASSIFIED_DEFER_RECOMMENDED=0; CLASSIFIED_CLEANUP_AFTER_TERMINAL=0
+        rm -f "${NF_BASE_WORK_DIR}/batch_status/${ACTIVE_BATCH_NAME}.complete.tsv"
+        write_batch_status_marker failure requeue REQUEUE_REQUESTED 0 INFRASTRUCTURE TIMEOUT_SIGNAL 1 0 0 "${ACTIVE_STAGE_LOG}" "" "self-requeue requested"
+        log "INFO: preserving work during self-requeue"
+    fi
 
     if [[ -n "${ACTIVE_CHILD_PID}" ]] &&
        kill -0 "${ACTIVE_CHILD_PID}" 2>/dev/null; then
@@ -193,9 +293,18 @@ cleanup_work_dir_if_requested() {
     local work_dir="$2"
 
     if [[ "${CLEAN_ON_SUCCESS}" == "1" || "${CLEAN_ON_SUCCESS}" == "true" ]]; then
-        if [[ -n "${work_dir}" && -d "${work_dir}" ]]; then
+        local base_real target_real rel
+        base_real="$(readlink -f "${NF_BASE_WORK_DIR}")"
+        target_real="$(readlink -f -m "${work_dir}")"
+        rel="${target_real#"${base_real}"/}"
+        if [[ "${target_real}" == "/" || "${target_real}" == "${base_real}" || "${target_real}" != "${base_real}/"* ||
+              ! "${rel}" =~ ^(pre|numt|round1|round2)/batch_[A-Za-z0-9._-]+$ ]]; then
+            log "ERROR: refusing unsafe batch cache cleanup: ${work_dir} -> ${target_real}"
+            return 64
+        fi
+        if [[ -d "${target_real}" ]]; then
             log "CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; deleting ${stage_name} work directory: ${work_dir}"
-            rm -rf "${work_dir}"
+            rm -rf -- "${target_real}"
         else
             log "CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; ${stage_name} work directory does not exist or was already removed: ${work_dir}"
         fi
@@ -317,7 +426,7 @@ run_numt_nextflow() {
         --numt_config "${auto_config}"
     )
 
-    run_child_stage numt env \
+    run_child_stage numt "${LOG_DIR}/${batch_name}.numt.log" env \
         NF_CONFIG_PATH="${NF_CONFIG_PATH}" \
         NXF_OPTS="${NXF_OPTS:-}" \
         "${numt_cmd[@]}"
@@ -332,6 +441,33 @@ validate_pre_to_round1() {
         [[ -s "${crai}" ]] || { echo "MISSING/EMPTY: ${crai}" >&2; missing=1; }
     done < <(read_sample_ids "${batch_file}")
     [[ "${missing}" -eq 0 ]]
+}
+
+write_failed_samples() {
+    local batch_file="$1" output="${NF_BASE_WORK_DIR}/batch_status/${ACTIVE_BATCH_NAME}.failed_samples.tsv"
+    local tmp sample cram crai now
+    mkdir -p "$(dirname "$output")"
+    tmp="$(mktemp "$(dirname "$output")/.${ACTIVE_BATCH_NAME}.failed_samples.XXXXXX")"
+    printf 'sample_id\tfailure_reason\texpected_cram\texpected_crai\tvalidation_time\n' > "$tmp"
+    now="$(status_time)"
+    while IFS= read -r sample; do
+        cram="${PRE_OUTPUT_DIR}/${sample}/alignment/${sample}.cram"; crai="${cram}.crai"
+        if [[ ! -s "$cram" || ! -s "$crai" ]]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' "$sample" CRAM_VALIDATION_FAILED "$cram" "$crai" "$now" >> "$tmp"
+        fi
+    done < <(read_sample_ids "$batch_file")
+    mv -f "$tmp" "$output"
+    log "INFO: failed samples file=${output}"
+}
+
+record_incomplete_outputs() {
+    local reason="$1" rc="${2:-1}"
+    ACTIVE_STAGE=validation
+    CLASSIFIED_FAILURE_CLASS=OUTPUT_INCOMPLETE; CLASSIFIED_FAILURE_REASON="$reason"
+    CLASSIFIED_RESUME_RECOMMENDED=0; CLASSIFIED_DEFER_RECOMMENDED=1; CLASSIFIED_CLEANUP_AFTER_TERMINAL=1
+    write_batch_failure_marker "$rc"
+    ACTIVE_STAGE=""
+    return "$rc"
 }
 
 validate_numt_to_round1() {
@@ -380,8 +516,14 @@ run_chain() {
     local round1_batch_work_dir="${ROUND1_NF_BASE_WORK_DIR}/${batch_name}"
     local round2_batch_work_dir="${ROUND2_NF_BASE_WORK_DIR}/${batch_name}"
 
+    ACTIVE_BATCH_NAME="${batch_name}"
+    ACTIVE_BATCH_FILE="$(readlink -f "${batch_file}")"
+    BATCH_START_TIME="$(status_time)"
+    log "INFO: ACTIVE_BATCH_NAME=${ACTIVE_BATCH_NAME}"
+    write_batch_status_marker failure initialization RUNNING 0 NONE NONE 1 0 0 "" "" "batch chain started"
+
     log "Starting per-batch chain ${batch_id}: ${batch_file}"
-    run_child_stage pre env \
+    run_child_stage pre "${LOG_DIR}/${batch_name}.pre.log" env \
         ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT}" \
         BATCH_FILE="${batch_file}" \
         BATCH_ID="${batch_name}" \
@@ -392,17 +534,26 @@ run_chain() {
         NEXTFLOW_MODULE="${NEXTFLOW_MODULE}" \
         DEFER_WORK_DIR_CLEANUP=1 \
         CHAIN_MANAGED_REQUEUE=1 \
+        FAILED_SAMPLES_FILE="${NF_BASE_WORK_DIR}/batch_status/${batch_name}.failed_samples.tsv" \
         bash "${PRE_LAUNCH_SCRIPT}"
-    validate_pre_to_round1 "${batch_file}" || fail "Preprocessing outputs are incomplete for ${batch_file}"
-    cleanup_work_dir_if_requested "pre_${batch_name}" "${pre_batch_work_dir}"
+    if ! validate_pre_to_round1 "${batch_file}"; then
+        write_failed_samples "${batch_file}"
+        ACTIVE_STAGE=validation; ACTIVE_STAGE_LOG="${LOG_DIR}/${batch_name}.pre.log"
+        CLASSIFIED_FAILURE_CLASS=OUTPUT_INCOMPLETE; CLASSIFIED_FAILURE_REASON=CRAM_VALIDATION_FAILED
+        CLASSIFIED_RESUME_RECOMMENDED=0; CLASSIFIED_DEFER_RECOMMENDED=1; CLASSIFIED_CLEANUP_AFTER_TERMINAL=1
+        write_batch_failure_marker 1 "${NF_BASE_WORK_DIR}/batch_status/${batch_name}.failed_samples.tsv"
+        return 1
+    fi
 
     if validate_numt_to_round1 "${batch_file}"; then
         log "Skipping NUMT for ${batch_id}; expected NUMT outputs already exist."
     else
         log "NUMT outputs incomplete for ${batch_id}; launching NUMT step."
         run_numt_nextflow "${batch_file}" "${batch_id}"
-        validate_numt_to_round1 "${batch_file}" || fail "NUMT outputs are incomplete for ${batch_file}"
-        cleanup_work_dir_if_requested "numt_${batch_name}" "${NUMT_NF_BASE_WORK_DIR}/${batch_name}"
+        if ! validate_numt_to_round1 "${batch_file}"; then
+            record_incomplete_outputs NUMT_VALIDATION_FAILED
+            return 1
+        fi
     fi
 
     if validate_round1_to_round2 "${batch_file}"; then
@@ -415,7 +566,7 @@ run_chain() {
         log "  CRAM_DIRS=${PRE_OUTPUT_DIR}"
         log "  NUMT_BED_DIR=${NUMT_BESTHIT_OUTDIR}"
         log "  NF_BASE_WORK_DIR=${ROUND1_NF_BASE_WORK_DIR}"
-        run_child_stage round1 env \
+        run_child_stage round1 "${LOG_DIR}/${batch_name}.round1.log" env \
             BATCH_FILE="${batch_file}" \
             BATCH_ID="${batch_name}" \
             FULL_SAMPLE_LIST="${batch_file}" \
@@ -428,8 +579,10 @@ run_chain() {
             DEFER_WORK_DIR_CLEANUP=1 \
             CHAIN_MANAGED_REQUEUE=1 \
             bash "${ROUND1_LAUNCH_SCRIPT}"
-        validate_round1_to_round2 "${batch_file}" || fail "Round 1 outputs are incomplete for ${batch_file}"
-        cleanup_work_dir_if_requested "round1_${batch_name}" "${round1_batch_work_dir}"
+        if ! validate_round1_to_round2 "${batch_file}"; then
+            record_incomplete_outputs ROUND1_VALIDATION_FAILED
+            return 1
+        fi
     fi
 
     if validate_round2_final "${batch_file}"; then
@@ -441,7 +594,7 @@ run_chain() {
         log "  OUTPUT_DIR=${ROUND_OUTPUT_DIR}"
         log "  ROUND1_OUTDIR=${ROUND1_OUTDIR}"
         log "  NF_BASE_WORK_DIR=${ROUND2_NF_BASE_WORK_DIR}"
-        run_child_stage round2 env \
+        run_child_stage round2 "${LOG_DIR}/${batch_name}.round2.log" env \
             BATCH_FILE="${batch_file}" \
             BATCH_ID="${batch_name}" \
             FULL_SAMPLE_LIST="${batch_file}" \
@@ -453,10 +606,19 @@ run_chain() {
             DEFER_WORK_DIR_CLEANUP=1 \
             CHAIN_MANAGED_REQUEUE=1 \
             bash "${ROUND2_LAUNCH_SCRIPT}"
-        validate_round2_final "${batch_file}" || fail "Round 2 outputs are incomplete for ${batch_file}"
-        cleanup_work_dir_if_requested "round2_${batch_name}" "${round2_batch_work_dir}"
+        if ! validate_round2_final "${batch_file}"; then
+            record_incomplete_outputs ROUND2_VALIDATION_FAILED
+            return 1
+        fi
     fi
+    write_batch_complete_marker
+    cleanup_work_dir_if_requested "pre_${batch_name}" "${pre_batch_work_dir}"
+    cleanup_work_dir_if_requested "numt_${batch_name}" "${NUMT_NF_BASE_WORK_DIR}/${batch_name}"
+    cleanup_work_dir_if_requested "round1_${batch_name}" "${round1_batch_work_dir}"
+    cleanup_work_dir_if_requested "round2_${batch_name}" "${round2_batch_work_dir}"
+    log "INFO: successful batch cache cleanup completed"
     log "Completed per-batch chain ${batch_id}"
+    ACTIVE_BATCH_NAME=""; ACTIVE_BATCH_FILE=""; ACTIVE_STAGE=""; ACTIVE_STAGE_LOG=""
 }
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
