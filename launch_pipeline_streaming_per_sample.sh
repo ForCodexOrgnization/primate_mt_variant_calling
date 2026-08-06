@@ -3,351 +3,357 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
-#SBATCH --partition=ycga
+#SBATCH --requeue
+#SBATCH --signal=B:USR1@300
 #SBATCH --output=log_streaming/nf_streaming_%A_%a.log
 
 set -euo pipefail
 
-# ==============================================================================
-# Per-sample streaming launcher for preprocessing -> NUMT discovery -> round 1 -> round 2.
-#
-# Run from the repository directory on a login/submission node:
-#   bash launch_pipeline_streaming_per_sample.sh
-# or submit the coordinator itself:
-#   sbatch launch_pipeline_streaming_per_sample.sh
-#
-# In coordinator mode, this script submits itself as a 1-based Slurm array using:
-#   --array=1-N%MAX_CONCURRENT
-# Each array task reads one line from FULL_SAMPLE_LIST with sed -n "${SLURM_ARRAY_TASK_ID}p"
-# and processes that sample from start to finish without waiting for other samples.
-#
-# Set CLEAN_ON_SUCCESS=1 to delete only this sample's Nextflow work directories after
-# all stages and validations pass. Work directories are always retained on failure.
-# ===============================================================================
-
-FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-/home/lt692/ycga_work/primate_mt_variant_calling/mcc_sample_list.txt}"
-PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_results}"
-ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_results}"
+# A stable, sample-centric launcher.  Work/cache identity is SAMPLE_ID, not a
+# submission "wave"; published workflow outputs remain in the existing trees.
+FULL_SAMPLE_LIST="${FULL_SAMPLE_LIST:-}"
+PRE_OUTPUT_DIR="${PRE_OUTPUT_DIR:-}"
+ROUND_OUTPUT_DIR="${ROUND_OUTPUT_DIR:-}"
 ROUND1_OUTDIR="${ROUND1_OUTDIR:-${ROUND_OUTPUT_DIR}}"
-
-NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR}/numt_discovery}"
-NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR}/numt_besthit}"
-GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/variant_calling_ref/Ref_whole}"
-REF_DIR="${REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/variant_calling_ref/Ref_chrM}"
-NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/variant_calling_ref/nuclear_only_refs}"
-
-NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-/home/lt692/ycga_work/nf_work_dir_all_per_batch/nf_work_dir_streaming_per_sample}"
+NF_BASE_WORK_DIR="${NF_BASE_WORK_DIR:-}"
+NF_CONFIG_FILE="${NF_CONFIG_FILE:-}"
+GLOBAL_REF_DIR="${GLOBAL_REF_DIR:-}"
+REF_DIR="${REF_DIR:-}"
+NUCLEAR_ONLY_REF_DIR="${NUCLEAR_ONLY_REF_DIR:-}"
+NUMT_DISCOVERY_OUTROOT="${NUMT_DISCOVERY_OUTROOT:-${ROUND_OUTPUT_DIR:+${ROUND_OUTPUT_DIR}/numt_discovery}}"
+NUMT_BESTHIT_OUTDIR="${NUMT_BESTHIT_OUTDIR:-${ROUND_OUTPUT_DIR:+${ROUND_OUTPUT_DIR}/numt_besthit}}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-10}"
-CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
-NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow_mcc.config}"
-LOG_DIR="${LOG_DIR:-log_streaming}"
+STREAM_PARTITION="${STREAM_PARTITION:-}"
+PIPELINE_PROFILE="${PIPELINE_PROFILE:-cluster}"
+CLEAN_VALIDATED_STAGE_WORK="${CLEAN_VALIDATED_STAGE_WORK:-1}"
+REMOVE_SAMPLE_ROOT_ON_SUCCESS="${REMOVE_SAMPLE_ROOT_ON_SUCCESS:-1}"
+IMMEDIATE_SAMPLE_RETRIES="${IMMEDIATE_SAMPLE_RETRIES:-1}"
+IMMEDIATE_RETRY_DELAY_SECONDS="${IMMEDIATE_RETRY_DELAY_SECONDS:-60}"
 
-log() {
-    printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2
-}
+ACTIVE_STAGE=""
+ACTIVE_CHILD_PID=""
+ACTIVE_STAGE_LOG=""
+REQUEUE_IN_PROGRESS=0
+FAILED_STAGE="setup"
+FAILURE_CLASS="UNKNOWN"
+FAILURE_REASON=""
+FAILURE_NONRETRYABLE=0
+FIRST_FAILURE_EPOCH=""
 
-fail() {
-    echo "ERROR: $*" >&2
-    exit 1
-}
+log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+require_value() { [[ -n "${!1:-}" ]] || die "$1 must be explicitly supplied by the manager"; }
+atomic_write() { local target=$1 tmp; mkdir -p "$(dirname "$target")"; tmp=$(mktemp "${target}.tmp.XXXXXX"); cat >"$tmp"; mv -f -- "$tmp" "$target"; }
+truthy() { [[ "$1" == 1 || "$1" == true ]]; }
 
-validate_file_nonempty() {
-    local path="$1"
-    [[ -s "${path}" ]] || fail "Missing or empty required file: ${path}"
-}
-
-validate_file_exists() {
-    local path="$1"
-    [[ -e "${path}" ]] || fail "Missing required file: ${path}"
-}
-
-# When submitted with sbatch, Slurm may execute a spool copy. Prefer the original
-# submission directory when it looks like this repository checkout.
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
-    REPO_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+    REPO_DIR=$(realpath -m "${SLURM_SUBMIT_DIR}")
 else
-    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_DIR=$(realpath -m "$(dirname "${BASH_SOURCE[0]}")")
 fi
-cd "${REPO_DIR}"
 
-NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${REPO_DIR}/${NF_CONFIG_FILE}"; fi)"
-[[ -s "${NF_CONFIG_PATH}" ]] || fail "NF_CONFIG_FILE does not exist or is empty: ${NF_CONFIG_PATH}"
+for variable in FULL_SAMPLE_LIST PRE_OUTPUT_DIR ROUND_OUTPUT_DIR NF_BASE_WORK_DIR NF_CONFIG_FILE GLOBAL_REF_DIR REF_DIR NUCLEAR_ONLY_REF_DIR; do require_value "$variable"; done
+[[ -f "$FULL_SAMPLE_LIST" ]] || die "FULL_SAMPLE_LIST does not exist: $FULL_SAMPLE_LIST"
+for directory in GLOBAL_REF_DIR REF_DIR NUCLEAR_ONLY_REF_DIR; do [[ -d "${!directory}" ]] || die "$directory is not a directory: ${!directory}"; done
+NF_CONFIG_PATH=$([[ "$NF_CONFIG_FILE" = /* ]] && printf %s "$NF_CONFIG_FILE" || printf %s "${REPO_DIR}/${NF_CONFIG_FILE}")
+[[ -s "$NF_CONFIG_PATH" ]] || die "NF_CONFIG_FILE does not exist or is empty: $NF_CONFIG_PATH"
+mkdir -p "$NF_BASE_WORK_DIR" "${NF_BASE_WORK_DIR}/.sample_state" "${NF_BASE_WORK_DIR}/.locks" "${NF_BASE_WORK_DIR}/.manifests"
 
-log "REPO_DIR=${REPO_DIR}"
-log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
-log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
-
-[[ -f "${FULL_SAMPLE_LIST}" ]] || fail "FULL_SAMPLE_LIST does not exist: ${FULL_SAMPLE_LIST}"
-mkdir -p "${LOG_DIR}" "${NF_BASE_WORK_DIR}"
+normalize_manifest() {
+    local source=$1 target=$2 tmp="${target}.tmp.$$"
+    awk -F '\t' 'BEGIN{OFS="\t"}
+      {sub(/\r$/,"")} /^[[:space:]]*($|#)/{next}
+      tolower($1)=="sample" || tolower($1)=="sample_id" {next}
+      NF < 2 || $1=="" || $2=="" {next}
+      { if ($1 in ref && ref[$1] != $2) {printf "conflicting reference for sample %s: %s versus %s\n",$1,ref[$1],$2 > "/dev/stderr"; bad=1; next}
+        if (!($1 in ref)) {ref[$1]=$2; order[++n]=$1} }
+      END {if (bad) exit 42; print "sample_id","reference_name"; for(i=1;i<=n;i++) print order[i],ref[order[i]]}' "$source" >"$tmp" || { rm -f "$tmp"; return 1; }
+    [[ $(wc -l <"$tmp") -gt 1 ]] || { rm -f "$tmp"; die "No valid sample rows in $source"; }
+    mv -f -- "$tmp" "$target"
+}
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    NUM_SAMPLES="$(wc -l < "${FULL_SAMPLE_LIST}" | tr -d '[:space:]')"
-    [[ "${NUM_SAMPLES}" -gt 0 ]] || fail "No sample lines found in ${FULL_SAMPLE_LIST}"
-
-    log "Submitting per-sample streaming array for ${NUM_SAMPLES} samples with concurrency ${MAX_CONCURRENT}"
-    log "REPO_DIR=${REPO_DIR}"
-    log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
-    log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
-    sbatch --export=ALL --array=1-"${NUM_SAMPLES}"%"${MAX_CONCURRENT}" "$0"
-    log "Job array submitted. Monitor with: squeue -u \$USER"
+    submission_id="${SLURM_JOB_ID:-$(date -u +%Y%m%dT%H%M%SZ).$$}"
+    NORMALIZED_SAMPLE_LIST="${NF_BASE_WORK_DIR}/.manifests/${submission_id}.samples.tsv"
+    normalize_manifest "$FULL_SAMPLE_LIST" "$NORMALIZED_SAMPLE_LIST" || die "Unable to normalize sample manifest"
+    NUM_SAMPLES=$(( $(wc -l <"$NORMALIZED_SAMPLE_LIST") - 1 ))
+    export NORMALIZED_SAMPLE_LIST
+    sbatch_args=(--export=ALL "--array=1-${NUM_SAMPLES}%${MAX_CONCURRENT}")
+    [[ -z "${STREAM_PARTITION}" ]] || sbatch_args+=(--partition="${STREAM_PARTITION}")
+    log "Submitting ${NUM_SAMPLES} sample workers from immutable manifest ${NORMALIZED_SAMPLE_LIST}"
+    sbatch "${sbatch_args[@]}" "$0"
     exit 0
 fi
 
-load_nextflow() {
-    if command -v nextflow >/dev/null 2>&1; then
-        echo "INFO: Using existing Nextflow: $(command -v nextflow)" >&2
-        nextflow -version
-        return 0
-    fi
-
-    if [[ -z "${NEXTFLOW_MODULE:-}" ]]; then
-        echo "ERROR: NEXTFLOW_MODULE is not set and nextflow is not already available" >&2
-        module spider Nextflow >&2 || true
-        exit 1
-    fi
-
-    echo "INFO: Loading Nextflow module: ${NEXTFLOW_MODULE}" >&2
-    module load "${NEXTFLOW_MODULE}" || {
-        echo "ERROR: Failed to load ${NEXTFLOW_MODULE}" >&2
-        module spider Nextflow >&2 || true
-        exit 1
-    }
-
-    command -v nextflow >/dev/null 2>&1 || {
-        echo "ERROR: nextflow not found after loading ${NEXTFLOW_MODULE}" >&2
-        exit 1
-    }
-
-    echo "INFO: Nextflow executable: $(command -v nextflow)" >&2
-    nextflow -version
-}
-load_nextflow
-
-log "Running per-sample streaming worker for 1-based task ${SLURM_ARRAY_TASK_ID}"
-log "REPO_DIR=${REPO_DIR}"
-log "NF_CONFIG_FILE=${NF_CONFIG_FILE}"
-log "NF_CONFIG_PATH=${NF_CONFIG_PATH}"
-SAMPLE_LINE="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "${FULL_SAMPLE_LIST}")"
-[[ -n "${SAMPLE_LINE}" ]] || fail "No sample line found for SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}"
-
-SAMPLE_ID="$(printf '%s\n' "${SAMPLE_LINE}" | awk -F '\t' '{print $1}')"
-REF_NAME="$(printf '%s\n' "${SAMPLE_LINE}" | awk -F '\t' '{print $2}')"
-SPECIES_NAME="${REF_NAME}"
-
-[[ -n "${SAMPLE_ID}" ]] || fail "Could not extract SAMPLE_ID from line ${SLURM_ARRAY_TASK_ID}"
-[[ -n "${REF_NAME}" ]] || fail "Could not extract REF_NAME from line ${SLURM_ARRAY_TASK_ID}"
-
-[[ "${SAMPLE_ID}" != "sample" && "${SAMPLE_ID}" != "sample_id" ]] || fail "Task ${SLURM_ARRAY_TASK_ID} selected a header line (${SAMPLE_ID}); remove headers from FULL_SAMPLE_LIST for 1-based streaming mode"
+[[ -n "${NORMALIZED_SAMPLE_LIST:-}" && -s "$NORMALIZED_SAMPLE_LIST" ]] || die "NORMALIZED_SAMPLE_LIST was not exported to the array worker"
+SAMPLE_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$NORMALIZED_SAMPLE_LIST")
+IFS=$'\t' read -r SAMPLE_ID REF_NAME _ <<<"$SAMPLE_LINE"
+if [[ -z "${SAMPLE_ID:-}" || ! "$SAMPLE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$SAMPLE_ID" == *..* ]]; then
+    die "UNSAFE_PATH: invalid SAMPLE_ID: ${SAMPLE_ID:-<empty>}"
+fi
+[[ -n "${REF_NAME:-}" ]] || die "MALFORMED_METADATA: missing reference_name"
 
 SAMPLE_WORK_ROOT="${NF_BASE_WORK_DIR}/${SAMPLE_ID}"
-SAMPLE_TSV_DIR="${SAMPLE_WORK_ROOT}/inputs"
-SAMPLE_TSV="${SAMPLE_TSV_DIR}/${SAMPLE_ID}.sample.tsv"
-PRE_WORK_DIR="${SAMPLE_WORK_ROOT}/pre"
-NUMT_WORK_DIR="${SAMPLE_WORK_ROOT}/numt"
-ROUND1_WORK_DIR="${SAMPLE_WORK_ROOT}/round1"
-ROUND2_WORK_DIR="${SAMPLE_WORK_ROOT}/round2"
-# Run each Nextflow invocation from a sample/stage-specific launch directory so
-# parallel array tasks do not contend for the repository-level .nextflow cache lock.
-PRE_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/pre"
-NUMT_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/numt"
-ROUND1_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round1"
-ROUND2_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round2"
-NUMT_CONFIG="${SAMPLE_WORK_ROOT}/${SAMPLE_ID}.numt.config"
+root_real=$(realpath -m "$NF_BASE_WORK_DIR")
+sample_real=$(realpath -m "$SAMPLE_WORK_ROOT")
+case "$sample_real" in "$root_real"/*) ;; *) die "Unsafe sample work path";; esac
+[[ "$sample_real" != "$root_real" && "$sample_real" != / ]] || die "Unsafe sample work path"
 
-mkdir -p "${SAMPLE_TSV_DIR}" "${PRE_WORK_DIR}" "${NUMT_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}" \
-    "${PRE_LAUNCH_DIR}" "${NUMT_LAUNCH_DIR}" "${ROUND1_LAUNCH_DIR}" "${ROUND2_LAUNCH_DIR}" \
-    "${NUMT_DISCOVERY_OUTROOT}" "${NUMT_BESTHIT_OUTDIR}"
-printf '%s\n' "${SAMPLE_LINE}" > "${SAMPLE_TSV}"
+# A lock file is merely an inode; only flock determines whether a worker is live.
+exec 9>"${NF_BASE_WORK_DIR}/.locks/${SAMPLE_ID}.lock"
+flock -n 9 || die "Another worker is already using ${SAMPLE_ID}"
+LOCK_HELD_SAMPLE="$SAMPLE_ID"
 
-log "Sample: ${SAMPLE_ID}"
-log "One-sample TSV: ${SAMPLE_TSV}"
+STATE_DIR="${NF_BASE_WORK_DIR}/.sample_state"
+SAMPLE_TSV="${SAMPLE_WORK_ROOT}/inputs/${SAMPLE_ID}.sample.tsv"
+METADATA_DIR="${SAMPLE_WORK_ROOT}/metadata"
+LOG_DIR="${SAMPLE_WORK_ROOT}/logs"
+PRE_WORK_DIR="${SAMPLE_WORK_ROOT}/pre"; NUMT_WORK_DIR="${SAMPLE_WORK_ROOT}/numt"
+ROUND1_WORK_DIR="${SAMPLE_WORK_ROOT}/round1"; ROUND2_WORK_DIR="${SAMPLE_WORK_ROOT}/round2"
+PRE_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/pre"; NUMT_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/numt"
+ROUND1_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round1"; ROUND2_LAUNCH_DIR="${SAMPLE_WORK_ROOT}/nextflow_launch/round2"
 
-CRAM_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram"
-CRAI_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram.crai"
+safe_remove_sample_stage_work() {
+    local id=$1 requested=$2 expected target
+    [[ "$id" == "$SAMPLE_ID" && "${LOCK_HELD_SAMPLE:-}" == "$id" ]] || { log "refusing cleanup without the sample lock"; return 1; }
+    target=$(realpath -m "$requested")
+    case "$(basename "$target")" in pre|numt|round1|round2) ;; *) log "refusing unsafe sample stage cleanup: $target"; return 1;; esac
+    expected=$(realpath -m "${NF_BASE_WORK_DIR}/${id}/$(basename "$target")")
+    [[ "$target" == "$expected" && "$target" == "$root_real"/* && "$target" != / ]] || { log "refusing unsafe sample stage cleanup: $target"; return 1; }
+    rm -rf -- "$target"
+}
+safe_remove_sample_work() {
+    local id=$1 target expected
+    [[ "$id" == "$SAMPLE_ID" && "${LOCK_HELD_SAMPLE:-}" == "$id" ]] || return 1
+    target=$(realpath -m "${NF_BASE_WORK_DIR}/${id}"); expected=$(realpath -m "$SAMPLE_WORK_ROOT")
+    [[ "$target" == "$expected" && "$target" == "$root_real"/* && "$target" != / && "$target" != "$root_real" ]] || { log "refusing unsafe sample cleanup: $target"; return 1; }
+    case "$(basename "$target")" in .sample_state|.locks|.manifests) return 1;; esac
+    rm -rf -- "$target"
+}
+clean_stage() { truthy "$CLEAN_VALIDATED_STAGE_WORK" && safe_remove_sample_stage_work "$SAMPLE_ID" "$1" || true; }
 
-if [[ -s "${CRAM_PATH}" && -s "${CRAI_PATH}" ]]; then
-    log "Skipping preprocessing for ${SAMPLE_ID}; existing CRAM and CRAI were found"
-else
-    log "Starting preprocessing for ${SAMPLE_ID}"
-    (
-        cd "${PRE_LAUNCH_DIR}"
-        nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/preprocessing.nf" \
-            -profile cluster \
-            -resume \
-            -w "${PRE_WORK_DIR}" \
-            --sample_tsv "${SAMPLE_TSV}" \
-            --outdir "${PRE_OUTPUT_DIR}"
-    )
+WGS_REF="${GLOBAL_REF_DIR}/${REF_NAME}.fa"; CHRM_REF="${REF_DIR}/${REF_NAME}.fa"
+NUCLEAR_REF="${NUCLEAR_ONLY_REF_DIR}/${REF_NAME}.nuclear_only.fa"
+[[ -s "$NUCLEAR_REF" ]] || NUCLEAR_REF="${NUCLEAR_ONLY_REF_DIR}/${REF_NAME}.fa"
+for ref in "$WGS_REF" "$CHRM_REF" "$NUCLEAR_REF"; do
+    if [[ ! -s "$ref" ]]; then FAILURE_CLASS=MISSING_REFERENCE; FAILURE_REASON="Missing reference: $ref"; FAILURE_NONRETRYABLE=1; break; fi
+done
+
+signature() { local p=$1; if [[ -e "$p" ]]; then printf '%s\t%s\t%s\n' "$(realpath -m "$p")" "$(stat -c %s "$p")" "$(stat -c %Y "$p")"; else printf '%s\tMISSING\n' "$(realpath -m "$p")"; fi; }
+build_fingerprint() {
+    local out=$1 manifest_sha config_sha commit reference_fp parameters_fp combined
+    manifest_sha=$(printf '%s\n' "$SAMPLE_LINE" | sha256sum | awk '{print $1}') || return 1
+    config_sha=$(sha256sum "$NF_CONFIG_PATH" | awk '{print $1}') || return 1
+    commit=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf unknown)
+    reference_fp=$({ for r in "$WGS_REF" "$CHRM_REF" "$NUCLEAR_REF"; do signature "$r"; for x in "$r.fai" "$r.dict" "${r%.*}.dict" "$r.amb" "$r.ann" "$r.bwt" "$r.pac" "$r.sa"; do signature "$x"; done; done; } | sha256sum | awk '{print $1}') || return 1
+    parameters_fp=$(printf '%s\n' "ENABLE_CHUNKED_ALIGNMENT=${ENABLE_CHUNKED_ALIGNMENT:-}" "FASTQ_SIZE_THRESHOLD_GB=${FASTQ_SIZE_THRESHOLD_GB:-}" "READS_PER_CHUNK=${READS_PER_CHUNK:-}" "NF_CONFIG_FILE=$NF_CONFIG_PATH" "pipeline_profile=$PIPELINE_PROFILE" "GLOBAL_REF_DIR=$(realpath -m "$GLOBAL_REF_DIR")" "REF_DIR=$(realpath -m "$REF_DIR")" "NUCLEAR_ONLY_REF_DIR=$(realpath -m "$NUCLEAR_ONLY_REF_DIR")" | sha256sum | awk '{print $1}') || return 1
+    combined=$(printf '%s\n' "$manifest_sha" "$config_sha" "$commit" "$reference_fp" "$parameters_fp" | sha256sum | awk '{print $1}') || return 1
+    { printf 'key\tvalue\n'; printf 'sample_manifest_sha256\t%s\npipeline_config_sha256\t%s\npipeline_git_commit\t%s\nreference_fingerprint\t%s\nimportant_parameters_sha256\t%s\ncombined_fingerprint\t%s\n' "$manifest_sha" "$config_sha" "$commit" "$reference_fp" "$parameters_fp" "$combined"; } >"$out"
+}
+
+fingerprint_tmp=$(mktemp "${NF_BASE_WORK_DIR}/.fingerprint.${SAMPLE_ID}.XXXXXX")
+if ! build_fingerprint "$fingerprint_tmp"; then FAILURE_CLASS=FINGERPRINT_GENERATION_FAILED; FAILURE_REASON="Fingerprint generation failed"; FAILURE_NONRETRYABLE=1; fi
+fingerprint_match=0; resume_mode=fresh
+if [[ -s "$fingerprint_tmp" && -f "${METADATA_DIR}/fingerprint.tsv" ]] && cmp -s "$fingerprint_tmp" "${METADATA_DIR}/fingerprint.tsv"; then fingerprint_match=1; resume_mode=resume
+elif [[ -e "$SAMPLE_WORK_ROOT" ]]; then
+    stale="${NF_BASE_WORK_DIR}/${SAMPLE_ID}.stale.$(date -u +%Y%m%dT%H%M%SZ).$$"
+    mv -- "$SAMPLE_WORK_ROOT" "$stale"
+    log "Fingerprint changed; archived old cache at $stale"
 fi
+mkdir -p "$METADATA_DIR" "$LOG_DIR" "$(dirname "$SAMPLE_TSV")" "$PRE_LAUNCH_DIR" "$NUMT_LAUNCH_DIR" "$ROUND1_LAUNCH_DIR" "$ROUND2_LAUNCH_DIR"
+[[ -s "$fingerprint_tmp" ]] && mv -f "$fingerprint_tmp" "${METADATA_DIR}/fingerprint.tsv" || rm -f "$fingerprint_tmp"
+printf '%s\n' "$SAMPLE_LINE" >"$SAMPLE_TSV"
+COMBINED_FINGERPRINT=$(awk -F '\t' '$1=="combined_fingerprint"{print $2}' "${METADATA_DIR}/fingerprint.tsv" 2>/dev/null || true)
+# Preserve queue age across later manager submissions; cleanup policy sorts by
+# this value rather than mutable directory mtimes or the most recent attempt.
+if [[ -s "${STATE_DIR}/${SAMPLE_ID}.failure.tsv" ]]; then
+    FIRST_FAILURE_EPOCH=$(awk -F '\t' '$1=="first_failure_epoch"{print $2; exit}' "${STATE_DIR}/${SAMPLE_ID}.failure.tsv")
+fi
+log "INFO: sample_fingerprint_match=${fingerprint_match}"
+log "INFO: resume_mode=${resume_mode}"
+log "INFO: sample_work_root=${SAMPLE_WORK_ROOT}"
 
-validate_file_nonempty "${CRAM_PATH}"
-validate_file_nonempty "${CRAI_PATH}"
-samtools quickcheck "${CRAM_PATH}" || fail "samtools quickcheck failed for ${CRAM_PATH}; retaining ${PRE_WORK_DIR}"
-log "Preprocessing validation passed for ${SAMPLE_ID}"
-log "Deleting preprocessing Nextflow work directory for ${SAMPLE_ID} after CRAM/CRAI validation: ${PRE_WORK_DIR}"
-rm -rf "${PRE_WORK_DIR}"
+current_slurm_element_id() { printf '%s_%s' "${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-}}" "${SLURM_ARRAY_TASK_ID:-}"; }
+handle_sample_requeue() {
+    [[ "$REQUEUE_IN_PROGRESS" == 0 ]] || return 0; REQUEUE_IN_PROGRESS=1
+    atomic_write "${STATE_DIR}/${SAMPLE_ID}.requeue.tsv" <<EOF
+sample_id\t${SAMPLE_ID}
+active_stage\t${ACTIVE_STAGE:-none}
+reason\tTIMEOUT_SIGNAL
+resume_eligible\t1
+work_root\t${SAMPLE_WORK_ROOT}
+slurm_job_id\t${SLURM_JOB_ID:-}
+array_job_id\t${SLURM_ARRAY_JOB_ID:-}
+array_task_id\t${SLURM_ARRAY_TASK_ID:-}
+time\t$(date -u +%FT%TZ)
+EOF
+    if [[ -n "$ACTIVE_CHILD_PID" ]] && kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then
+        kill -TERM "$ACTIVE_CHILD_PID" 2>/dev/null || true
+        for _ in $(seq 1 60); do kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null || break; sleep 2; done
+        kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true
+    fi
+    scontrol requeue "$(current_slurm_element_id)" || log "scontrol requeue failed"
+    exit 0
+}
+trap handle_sample_requeue USR1
 
+run_stage() {
+    local stage=$1 stage_log=$2; shift 2
+    ACTIVE_STAGE=$stage; ACTIVE_STAGE_LOG=$stage_log
+    set +e
+    ( cd "${SAMPLE_WORK_ROOT}/nextflow_launch/${stage}"; "$@" ) > >(tee -a "$stage_log") 2> >(tee -a "$stage_log" >&2) &
+    ACTIVE_CHILD_PID=$!; wait "$ACTIVE_CHILD_PID"; local rc=$?; ACTIVE_CHILD_PID=""; set -e
+    (( REQUEUE_IN_PROGRESS == 0 )) || return 125
+    (( rc == 0 )) || { FAILED_STAGE=$stage; FAILURE_CLASS=STAGE_FAILED; FAILURE_REASON="${stage} Nextflow exited ${rc}"; return "$rc"; }
+}
+nf() { nextflow -C "$NF_CONFIG_PATH" run "$1" -profile "$PIPELINE_PROFILE" -resume -w "$2" "${@:3}"; }
+file_nonempty() { [[ -s "$1" ]]; }
+find_nonempty() { find "$1" -type f -name "$2" -size +0c -print -quit 2>/dev/null | grep -q .; }
+
+CRAM_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram"; CRAI_PATH="${CRAM_PATH}.crai"
 NUMT_BED="${NUMT_BESTHIT_OUTDIR}/${SAMPLE_ID}.highconf_numt.bed"
+ROUND1_BAM="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/candidate_reads/${SAMPLE_ID}.with_mates.bam"
+ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1_variant_calling_decoy"
+ROUND1_NUMT_FA="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_ref/${SAMPLE_ID}.original_numt.fa"
+ROUND1_NUMT_VCF="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_variant_calling/${SAMPLE_ID}.numt_decoy.raw.vcf.gz"
+ROUND2_VCF_DIR="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2_variant_calling_original_coords"
+ROUND2_VCF="${ROUND2_VCF_DIR}/${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
+ROUND2_COVERAGE="${ROUND2_VCF_DIR}/${SAMPLE_ID}.round2.original_coords.per_base_coverage.tsv"
+ROUND2_MTCN="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2/mtcn/${SAMPLE_ID}.round2.mtcn.tsv"
 
-if [[ -e "${NUMT_BED}" ]]; then
-    # Empty high-confidence NUMT BED files are valid for samples with no calls.
-    log "Skipping NUMT discovery for ${SAMPLE_ID}; existing high-confidence NUMT BED was found: ${NUMT_BED}"
-else
-    NUMT_DIR="${REPO_DIR}/numt_detection"
-    [[ -d "${NUMT_DIR}" && -f "${NUMT_DIR}/run_numt_end2end.sh" ]] || fail "Bundled numt_detection is missing run_numt_end2end.sh: ${NUMT_DIR}"
+pre_complete() { [[ -s "$CRAM_PATH" && -s "$CRAI_PATH" ]] && samtools quickcheck "$CRAM_PATH"; }
+numt_complete() { [[ -e "$NUMT_BED" ]]; }
+round1_complete() { [[ -s "$ROUND1_BAM" && -e "$ROUND1_NUMT_FA" && -s "$ROUND1_NUMT_VCF" && -s "${ROUND1_NUMT_VCF}.tbi" ]] && find_nonempty "$ROUND1_VCF_DIR" "${SAMPLE_ID}.numt_decoy.clean.final.split.vcf"; }
+round2_complete() { [[ -s "$ROUND2_VCF" && -s "$ROUND2_COVERAGE" && -s "$ROUND2_MTCN" ]]; }
+numt_decoy_coverage_path() { find "$ROUND1_VCF_DIR" -type f \( -name '*per_base_coverage*' -o -name '*per-base*coverage*' \) -size +0c -print -quit 2>/dev/null; }
+final_outputs_complete() {
+    [[ -s "$CRAM_PATH" && -s "$CRAI_PATH" ]] || return 1
+    samtools quickcheck "$CRAM_PATH" || return 1
+    [[ -s "$ROUND2_VCF" ]] && gzip -t "$ROUND2_VCF" || return 1
+    [[ -s "$ROUND2_COVERAGE" ]] || return 1
+    [[ -n "$(numt_decoy_coverage_path)" ]] || return 1
+    [[ -s "$ROUND2_MTCN" ]] || return 1
+}
 
-    WGS_REF="${GLOBAL_REF_DIR}/${REF_NAME}.fa"
-    CHRM_REF="${REF_DIR}/${REF_NAME}.fa"
-
-    NUCLEAR_REF="${NUCLEAR_ONLY_REF_DIR}/${REF_NAME}.nuclear_only.fa"
-    if [[ ! -s "${NUCLEAR_REF}" ]]; then
-        alt_nuclear_ref="${NUCLEAR_ONLY_REF_DIR}/${REF_NAME}.fa"
-        if [[ -s "${alt_nuclear_ref}" ]]; then
-            NUCLEAR_REF="${alt_nuclear_ref}"
-        fi
-    fi
-
-    [[ -s "${WGS_REF}" ]] || fail "Missing WGS_REF for NUMT: ${WGS_REF}"
-    [[ -s "${CHRM_REF}" ]] || fail "Missing CHRM_REF for NUMT: ${CHRM_REF}"
-    [[ -s "${NUCLEAR_REF}" ]] || fail "Missing NUCLEAR_REF for NUMT: ${NUCLEAR_REF}"
-
-    if [[ ! -s "${CHRM_REF}.fai" ]]; then
-        fail "Missing chrM fasta index for NUMT MT_LENGTH: ${CHRM_REF}.fai"
-    fi
-
-    MT_CONTIG="$(awk 'NR==1 {print $1}' "${CHRM_REF}.fai")"
-    MT_LENGTH="$(awk 'NR==1 {print $2}' "${CHRM_REF}.fai")"
-
-    [[ -n "${MT_CONTIG}" ]] || fail "Could not determine MT_CONTIG from ${CHRM_REF}.fai"
-    [[ -n "${MT_LENGTH}" ]] || fail "Could not determine MT_LENGTH from ${CHRM_REF}.fai"
-
-    cat > "${NUMT_CONFIG}" <<CONFIG
-# Auto-generated by primate_mt_variant_calling/launch_pipeline_streaming_per_sample.sh for ${SAMPLE_ID}
+write_numt_config() {
+    [[ -s "${CHRM_REF}.fai" ]] || { FAILURE_CLASS=MISSING_REFERENCE; FAILURE_REASON="Missing ${CHRM_REF}.fai"; FAILURE_NONRETRYABLE=1; return 1; }
+    local mt_contig mt_length config="${METADATA_DIR}/${SAMPLE_ID}.numt.config"
+    read -r mt_contig mt_length _ <"${CHRM_REF}.fai"
+    cat >"$config" <<EOF
 SAMPLE=${SAMPLE_ID}
 SAMPLE_ID=${SAMPLE_ID}
-SPECIES_NAME=${SPECIES_NAME}
+SPECIES_NAME=${REF_NAME}
 REF_NAME=${REF_NAME}
 SAMPLES_TSV=${SAMPLE_TSV}
-
 INPUT_BAM_CRAM=${CRAM_PATH}
 INPUT_INDEX=${CRAI_PATH}
 INPUT_BAM_CRAM_ALT=${CRAM_PATH}
 INPUT_INDEX_ALT=${CRAI_PATH}
-
-MT_CONTIG=${MT_CONTIG}
-MT_LENGTH=${MT_LENGTH}
-
+MT_CONTIG=${mt_contig}
+MT_LENGTH=${mt_length}
 WGS_REF=${WGS_REF}
 NUCLEAR_REF=${NUCLEAR_REF}
 CHRM_REF=${CHRM_REF}
-
 CRAM_ROOT_1=${PRE_OUTPUT_DIR}
 CRAM_ROOT_2=${PRE_OUTPUT_DIR}
 WHOLE_REF_DIR=${GLOBAL_REF_DIR}
 NUCLEAR_ONLY_REF_DIR=${NUCLEAR_ONLY_REF_DIR}
 CHRM_REF_DIR=${REF_DIR}
-
 OUTDIR=${NUMT_DISCOVERY_OUTROOT}
 DISCOVERY_OUTDIR=${NUMT_DISCOVERY_OUTROOT}
 DISCOVERY_OUTROOT=${NUMT_DISCOVERY_OUTROOT}
 BESTHIT_OUTDIR=${NUMT_BESTHIT_OUTDIR}
-CONFIG
-
-    grep -q '^SAMPLE=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing SAMPLE=: ${NUMT_CONFIG}"
-    grep -q '^DISCOVERY_OUTDIR=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing DISCOVERY_OUTDIR=: ${NUMT_CONFIG}"
-    grep -q '^BESTHIT_OUTDIR=' "${NUMT_CONFIG}" || fail "Generated NUMT config is missing BESTHIT_OUTDIR=: ${NUMT_CONFIG}"
-    log "Starting NUMT discovery for ${SAMPLE_ID} with config ${NUMT_CONFIG}"
-    log "NUMT launch directory for ${SAMPLE_ID}: ${NUMT_LAUNCH_DIR}"
-    log "Generated NUMT config for ${SAMPLE_ID}:"
-    sed 's/^/  /' "${NUMT_CONFIG}" >&2
-    (
-        cd "${NUMT_LAUNCH_DIR}"
-        nextflow -C "${NF_CONFIG_PATH}" run "${NUMT_DIR}/numt_end2end.nf" \
-            -profile cluster \
-            -resume \
-            -w "${NUMT_WORK_DIR}" \
-            --numt_config "${NUMT_CONFIG}"
-    )
-fi
-
-# Empty high-confidence NUMT BED files are valid for samples with no calls.
-validate_file_exists "${NUMT_BED}"
-log "NUMT validation passed for ${SAMPLE_ID}"
-
-ROUND1_BAM="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/candidate_reads/${SAMPLE_ID}.with_mates.bam"
-ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1_variant_calling_decoy"
-ROUND1_NUMT_FA="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_ref/${SAMPLE_ID}.original_numt.fa"
-ROUND1_NUMT_VCF="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_variant_calling/${SAMPLE_ID}.numt_decoy.raw.vcf.gz"
-
-round1_outputs_complete() {
-    [[ -s "${ROUND1_BAM}" ]] || return 1
-    [[ -d "${ROUND1_VCF_DIR}" ]] || return 1
-    find "${ROUND1_VCF_DIR}" -type f -name "${SAMPLE_ID}.numt_decoy.clean.final.split.vcf" -size +0c -print -quit | grep -q . || return 1
-    [[ -e "${ROUND1_NUMT_FA}" ]] || return 1
-    [[ -s "${ROUND1_NUMT_VCF}" ]] || return 1
-    [[ -s "${ROUND1_NUMT_VCF}.tbi" ]] || return 1
+EOF
+    NUMT_CONFIG=$config
 }
 
-if round1_outputs_complete; then
-    log "Skipping round 1 for ${SAMPLE_ID}; existing round 1 outputs were found"
-else
-    log "Starting round 1 for ${SAMPLE_ID}"
-    (
-        cd "${ROUND1_LAUNCH_DIR}"
-        nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" \
-            -profile cluster \
-            -resume \
-            -w "${ROUND1_WORK_DIR}" \
-            --sample_tsv "${SAMPLE_TSV}" \
-            --outdir "${ROUND1_OUTDIR}" \
-            --cram_dirs "${PRE_OUTPUT_DIR}" \
-            --numt_bed_dir "${NUMT_BESTHIT_OUTDIR}" \
-            --CLEAN_ON_SUCCESS "${CLEAN_ON_SUCCESS}"
-    )
-fi
-
-validate_file_nonempty "${ROUND1_BAM}"
-[[ -d "${ROUND1_VCF_DIR}" ]] || fail "Missing required directory: ${ROUND1_VCF_DIR}"
-find "${ROUND1_VCF_DIR}" -type f -name "${SAMPLE_ID}.numt_decoy.clean.final.split.vcf" -size +0c -print -quit | grep -q . \
-    || fail "Missing or empty round 1 final VCF under: ${ROUND1_VCF_DIR}"
-validate_file_exists "${ROUND1_NUMT_FA}"
-validate_file_nonempty "${ROUND1_NUMT_VCF}"
-validate_file_nonempty "${ROUND1_NUMT_VCF}.tbi"
-log "Round 1 validation passed for ${SAMPLE_ID}"
-
-ROUND2_VCF_DIR="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2_variant_calling_original_coords"
-
-round2_outputs_complete() {
-    [[ -d "${ROUND2_VCF_DIR}" ]] || return 1
-    find "${ROUND2_VCF_DIR}" -type f -name "${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz" -size +0c -print -quit | grep -q . || return 1
+run_sample_chain() {
+    if (( FAILURE_NONRETRYABLE )); then FAILED_STAGE=setup; return 1; fi
+    mkdir -p "$PRE_WORK_DIR" "$NUMT_WORK_DIR" "$ROUND1_WORK_DIR" "$ROUND2_WORK_DIR" "$NUMT_DISCOVERY_OUTROOT" "$NUMT_BESTHIT_OUTDIR"
+    if ! pre_complete; then run_stage pre "${LOG_DIR}/pre.log" nf "${REPO_DIR}/preprocessing.nf" "$PRE_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$PRE_OUTPUT_DIR" || return; fi
+    pre_complete || { FAILED_STAGE=pre; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="CRAM/CRAI validation failed"; return 1; }; clean_stage "$PRE_WORK_DIR"
+    if ! numt_complete; then write_numt_config || return 1; run_stage numt "${LOG_DIR}/numt.log" nf "${REPO_DIR}/numt_detection/numt_end2end.nf" "$NUMT_WORK_DIR" --numt_config "$NUMT_CONFIG" || return; fi
+    numt_complete || { FAILED_STAGE=numt; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="NUMT BED missing"; return 1; }; clean_stage "$NUMT_WORK_DIR"
+    if ! round1_complete; then run_stage round1 "${LOG_DIR}/round1.log" nf "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" "$ROUND1_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND1_OUTDIR" --cram_dirs "$PRE_OUTPUT_DIR" --numt_bed_dir "$NUMT_BESTHIT_OUTDIR" || return; fi
+    round1_complete || { FAILED_STAGE=round1; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Round 1 outputs incomplete"; return 1; }; clean_stage "$ROUND1_WORK_DIR"
+    if ! round2_complete; then run_stage round2 "${LOG_DIR}/round2.log" nf "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" "$ROUND2_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND_OUTPUT_DIR" --round1_outdir "$ROUND1_OUTDIR" || return; fi
+    # Do not clean round2 until the complete eight-part final validation succeeds.
+    final_outputs_complete || { FAILED_STAGE=round2; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Final eight-part output validation failed"; return 1; }
 }
 
-if round2_outputs_complete; then
-    log "Skipping round 2 for ${SAMPLE_ID}; existing round 2 outputs were found"
-else
-    log "Starting round 2 for ${SAMPLE_ID}"
-    (
-        cd "${ROUND2_LAUNCH_DIR}"
-        nextflow -C "${NF_CONFIG_PATH}" run "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" \
-            -profile cluster \
-            -resume \
-            -w "${ROUND2_WORK_DIR}" \
-            --sample_tsv "${SAMPLE_TSV}" \
-            --outdir "${ROUND_OUTPUT_DIR}" \
-            --round1_outdir "${ROUND1_OUTDIR}"
-    )
+record_attempt() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$(date +%s)" "$FAILED_STAGE" "$FAILURE_CLASS" "$FAILURE_REASON" >>"${METADATA_DIR}/attempts.tsv"; }
+classify_sample_failure() { case "$FAILURE_CLASS" in MISSING_REFERENCE|MALFORMED_METADATA|UNSUPPORTED_REFERENCE|UNSAFE_PATH|FINGERPRINT_GENERATION_FAILED) FAILURE_NONRETRYABLE=1;; esac; }
+collect_diagnostics() {
+    local d="${METADATA_DIR}/diagnostics.$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$d"
+    [[ -f "$ACTIVE_STAGE_LOG" ]] && tail -n 500 "$ACTIVE_STAGE_LOG" >"$d/stage.log.tail" || true
+    [[ -f "${SAMPLE_WORK_ROOT}/nextflow_launch/${FAILED_STAGE}/.nextflow.log" ]] && tail -n 500 "${SAMPLE_WORK_ROOT}/nextflow_launch/${FAILED_STAGE}/.nextflow.log" >"$d/nextflow.log.tail" || true
+    { scontrol show job "${SLURM_JOB_ID:-}" 2>&1 || true; } >"$d/slurm.txt"
+    df -h >"$d/df-h.txt" 2>&1 || true; df -ih >"$d/df-ih.txt" 2>&1 || true; du -sb "$SAMPLE_WORK_ROOT" >"$d/du-sb.txt" 2>&1 || true
+    cp "${METADATA_DIR}/fingerprint.tsv" "$d/" 2>/dev/null || true; printf %s "$d"
+}
+write_failure_marker() {
+    local now=$1 diagnostics=$2 work_bytes
+    work_bytes=$(du -sb "$SAMPLE_WORK_ROOT" 2>/dev/null | awk '{print $1}'); work_bytes=${work_bytes:-0}
+    atomic_write "${STATE_DIR}/${SAMPLE_ID}.failure.tsv" <<EOF
+sample_id\t${SAMPLE_ID}
+reference_name\t${REF_NAME}
+failed_stage\t${FAILED_STAGE}
+failure_class\t${FAILURE_CLASS}
+failure_reason\t${FAILURE_REASON//$'\n'/ }
+attempt_count\t${attempt}
+first_failure_time\t$(date -u -d "@${FIRST_FAILURE_EPOCH}" +%FT%TZ)
+last_failure_time\t$(date -u -d "@${now}" +%FT%TZ)
+first_failure_epoch\t${FIRST_FAILURE_EPOCH}
+last_failure_epoch\t${now}
+last_attempt_epoch\t${now}
+work_root\t${SAMPLE_WORK_ROOT}
+work_bytes\t${work_bytes}
+fingerprint\t${COMBINED_FINGERPRINT}
+resume_possible\t1
+diagnostics_path\t${diagnostics}
+slurm_job_id\t${SLURM_JOB_ID:-}
+array_job_id\t${SLURM_ARRAY_JOB_ID:-}
+array_task_id\t${SLURM_ARRAY_TASK_ID:-}
+EOF
+}
+
+atomic_write "${STATE_DIR}/${SAMPLE_ID}.running.tsv" <<EOF
+sample_id\t${SAMPLE_ID}
+reference_name\t${REF_NAME}
+work_root\t${SAMPLE_WORK_ROOT}
+time\t$(date -u +%FT%TZ)
+EOF
+
+attempt=0; max_attempts=$((1 + IMMEDIATE_SAMPLE_RETRIES)); success=0
+while (( attempt < max_attempts )); do
+    attempt=$((attempt + 1))
+    if run_sample_chain; then success=1; break; fi
+    (( REQUEUE_IN_PROGRESS == 0 )) || exit 0
+    now=$(date +%s); [[ -n "$FIRST_FAILURE_EPOCH" ]] || FIRST_FAILURE_EPOCH=$now
+    record_attempt "$attempt"; classify_sample_failure
+    (( FAILURE_NONRETRYABLE == 0 )) || break
+    if (( attempt < max_attempts )); then log "Immediate retry ${attempt}/${IMMEDIATE_SAMPLE_RETRIES}"; sleep "$IMMEDIATE_RETRY_DELAY_SECONDS"; fi
+done
+
+if (( success )); then
+    # Persistence ordering is deliberate: state survives optional work-root removal.
+    atomic_write "${STATE_DIR}/${SAMPLE_ID}.complete.tsv" <<EOF
+sample_id\t${SAMPLE_ID}
+reference_name\t${REF_NAME}
+fingerprint\t${COMBINED_FINGERPRINT}
+completed_epoch\t$(date +%s)
+completed_time\t$(date -u +%FT%TZ)
+EOF
+    rm -f -- "${STATE_DIR}/${SAMPLE_ID}.failure.tsv" "${STATE_DIR}/${SAMPLE_ID}.requeue.tsv" "${STATE_DIR}/${SAMPLE_ID}.running.tsv"
+    clean_stage "$PRE_WORK_DIR"; clean_stage "$NUMT_WORK_DIR"; clean_stage "$ROUND1_WORK_DIR"; clean_stage "$ROUND2_WORK_DIR"
+    truthy "$REMOVE_SAMPLE_ROOT_ON_SUCCESS" && safe_remove_sample_work "$SAMPLE_ID"
+    log "Completed per-sample streaming pipeline for ${SAMPLE_ID}"
+    exit 0
 fi
 
-[[ -d "${ROUND2_VCF_DIR}" ]] || fail "Missing required directory: ${ROUND2_VCF_DIR}"
-find "${ROUND2_VCF_DIR}" -type f -name "${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz" -size +0c -print -quit | grep -q . \
-    || fail "Missing or empty round 2 final VCF under: ${ROUND2_VCF_DIR}"
-log "Round 2 validation passed for ${SAMPLE_ID}"
-
-if [[ "${CLEAN_ON_SUCCESS}" == "1" || "${CLEAN_ON_SUCCESS}" == "true" ]]; then
-    log "CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; deleting this sample's Nextflow work directories only"
-    rm -rf "${PRE_WORK_DIR}" "${NUMT_WORK_DIR}" "${ROUND1_WORK_DIR}" "${ROUND2_WORK_DIR}"
-else
-    log "CLEAN_ON_SUCCESS=${CLEAN_ON_SUCCESS}; retaining work directories for resume/debugging"
-fi
-
-log "Completed per-sample streaming pipeline for ${SAMPLE_ID}"
+now=$(date +%s); [[ -n "$FIRST_FAILURE_EPOCH" ]] || FIRST_FAILURE_EPOCH=$now
+diagnostics=$(collect_diagnostics)
+write_failure_marker "$now" "$diagnostics"
+rm -f -- "${STATE_DIR}/${SAMPLE_ID}.running.tsv"
+log "Sample ${SAMPLE_ID} failed after ${attempt} attempt(s); retaining ${FAILED_STAGE} work"
+exit 1
