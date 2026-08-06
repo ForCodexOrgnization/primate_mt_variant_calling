@@ -29,6 +29,9 @@ CLEAN_VALIDATED_STAGE_WORK="${CLEAN_VALIDATED_STAGE_WORK:-1}"
 REMOVE_SAMPLE_ROOT_ON_SUCCESS="${REMOVE_SAMPLE_ROOT_ON_SUCCESS:-1}"
 IMMEDIATE_SAMPLE_RETRIES="${IMMEDIATE_SAMPLE_RETRIES:-1}"
 IMMEDIATE_RETRY_DELAY_SECONDS="${IMMEDIATE_RETRY_DELAY_SECONDS:-60}"
+NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
+SAMTOOLS_MODULE="${SAMTOOLS_MODULE:-}"
+STREAM_SMOKE_TEST="${STREAM_SMOKE_TEST:-0}"
 
 ACTIVE_STAGE=""
 ACTIVE_CHILD_PID=""
@@ -46,6 +49,27 @@ require_value() { [[ -n "${!1:-}" ]] || die "$1 must be explicitly supplied by t
 atomic_write() { local target=$1 tmp; mkdir -p "$(dirname "$target")"; tmp=$(mktemp "${target}.tmp.XXXXXX"); cat >"$tmp"; mv -f -- "$tmp" "$target"; }
 truthy() { [[ "$1" == 1 || "$1" == true ]]; }
 
+load_required_tools() {
+    local tool module_name executable version
+    for tool in nextflow samtools; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            if [[ "$tool" == nextflow ]]; then module_name=$NEXTFLOW_MODULE; else module_name=$SAMTOOLS_MODULE; fi
+            [[ -n "$module_name" ]] || die "$tool is not in PATH and ${tool^^}_MODULE is empty"
+            command -v module >/dev/null 2>&1 || die "$tool is not in PATH and the module command is unavailable"
+            module load "$module_name" || die "Unable to load module $module_name for $tool"
+        fi
+        command -v "$tool" >/dev/null 2>&1 || die "$tool is unavailable after environment setup"
+        executable=$(command -v "$tool")
+        if [[ "$tool" == nextflow ]]; then
+            version=$(nextflow -version 2>&1 | head -n 1)
+        else
+            version=$(samtools --version 2>&1 | head -n 1)
+        fi
+        log "INFO: ${tool}_executable=${executable}"
+        log "INFO: ${tool}_version=${version}"
+    done
+}
+
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
     REPO_DIR=$(realpath -m "${SLURM_SUBMIT_DIR}")
 else
@@ -58,9 +82,11 @@ for directory in GLOBAL_REF_DIR REF_DIR NUCLEAR_ONLY_REF_DIR; do [[ -d "${!direc
 NF_CONFIG_PATH=$([[ "$NF_CONFIG_FILE" = /* ]] && printf %s "$NF_CONFIG_FILE" || printf %s "${REPO_DIR}/${NF_CONFIG_FILE}")
 [[ -s "$NF_CONFIG_PATH" ]] || die "NF_CONFIG_FILE does not exist or is empty: $NF_CONFIG_PATH"
 mkdir -p "$NF_BASE_WORK_DIR" "${NF_BASE_WORK_DIR}/.sample_state" "${NF_BASE_WORK_DIR}/.locks" "${NF_BASE_WORK_DIR}/.manifests"
+load_required_tools
 
 normalize_manifest() {
-    local source=$1 target=$2 tmp="${target}.tmp.$$"
+    local source=$1 target=$2 tmp
+    tmp="${target}.tmp.$$"
     awk -F '\t' 'BEGIN{OFS="\t"}
       {sub(/\r$/,"")} /^[[:space:]]*($|#)/{next}
       tolower($1)=="sample" || tolower($1)=="sample_id" {next}
@@ -77,11 +103,28 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     NORMALIZED_SAMPLE_LIST="${NF_BASE_WORK_DIR}/.manifests/${submission_id}.samples.tsv"
     normalize_manifest "$FULL_SAMPLE_LIST" "$NORMALIZED_SAMPLE_LIST" || die "Unable to normalize sample manifest"
     NUM_SAMPLES=$(( $(wc -l <"$NORMALIZED_SAMPLE_LIST") - 1 ))
+    if truthy "$STREAM_SMOKE_TEST"; then
+        (( NUM_SAMPLES == 1 )) || die "STREAM_SMOKE_TEST=1 requires exactly one normalized sample (found ${NUM_SAMPLES})"
+        MAX_CONCURRENT=1
+        log "WARNING: STREAM_SMOKE_TEST=1; restricting this submission to one sample and one concurrent worker"
+    fi
     export NORMALIZED_SAMPLE_LIST
     sbatch_args=(--export=ALL "--array=1-${NUM_SAMPLES}%${MAX_CONCURRENT}")
     [[ -z "${STREAM_PARTITION}" ]] || sbatch_args+=(--partition="${STREAM_PARTITION}")
     log "Submitting ${NUM_SAMPLES} sample workers from immutable manifest ${NORMALIZED_SAMPLE_LIST}"
-    sbatch "${sbatch_args[@]}" "$0"
+    if ! submission=$(sbatch "${sbatch_args[@]}" "$0"); then
+        die "sbatch failed while submitting the sample array"
+    fi
+    if [[ "$submission" =~ ^Submitted[[:space:]]+batch[[:space:]]+job[[:space:]]+([0-9]+)[[:space:]]*$ ]]; then
+        submitted_job_id=${BASH_REMATCH[1]}
+    else
+        die "Unable to parse Slurm job ID from sbatch output: $submission"
+    fi
+    printf '%s\n' "$submission"
+    log "INFO: submitted_array_job_id=${submitted_job_id}"
+    log "INFO: normalized_manifest=${NORMALIZED_SAMPLE_LIST}"
+    log "INFO: sample_count=${NUM_SAMPLES}"
+    log "INFO: max_concurrent=${MAX_CONCURRENT}"
     exit 0
 fi
 
@@ -173,9 +216,36 @@ log "INFO: sample_fingerprint_match=${fingerprint_match}"
 log "INFO: resume_mode=${resume_mode}"
 log "INFO: sample_work_root=${SAMPLE_WORK_ROOT}"
 
-current_slurm_element_id() { printf '%s_%s' "${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-}}" "${SLURM_ARRAY_TASK_ID:-}"; }
+current_slurm_element_id() {
+    if [[ -n "${SLURM_ARRAY_JOB_ID:-}" && -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+        printf '%s_%s\n' "${SLURM_ARRAY_JOB_ID}" "${SLURM_ARRAY_TASK_ID}"
+    else
+        printf '%s\n' "${SLURM_JOB_ID:-}"
+    fi
+}
+write_running_marker() {
+    local worker_state=$1 current_attempt=$2
+    atomic_write "${STATE_DIR}/${SAMPLE_ID}.running.tsv" <<EOF
+sample_id\t${SAMPLE_ID}
+reference_name\t${REF_NAME}
+work_root\t${SAMPLE_WORK_ROOT}
+worker_state\t${worker_state}
+active_stage\t${ACTIVE_STAGE:-none}
+attempt\t${current_attempt}
+slurm_job_id\t${SLURM_JOB_ID:-}
+array_job_id\t${SLURM_ARRAY_JOB_ID:-}
+array_task_id\t${SLURM_ARRAY_TASK_ID:-}
+updated_epoch\t$(date +%s)
+updated_time\t$(date -u +%FT%TZ)
+EOF
+}
 handle_sample_requeue() {
     [[ "$REQUEUE_IN_PROGRESS" == 0 ]] || return 0; REQUEUE_IN_PROGRESS=1
+    log "INFO: Received USR1 before walltime"
+    log "INFO: sample_id=${SAMPLE_ID}"
+    log "INFO: active_stage=${ACTIVE_STAGE:-none}"
+    log "INFO: preserving_sample_work_root=${SAMPLE_WORK_ROOT}"
+    write_running_marker REQUEUE_REQUESTED "${attempt:-0}"
     atomic_write "${STATE_DIR}/${SAMPLE_ID}.requeue.tsv" <<EOF
 sample_id\t${SAMPLE_ID}
 active_stage\t${ACTIVE_STAGE:-none}
@@ -190,9 +260,20 @@ EOF
     if [[ -n "$ACTIVE_CHILD_PID" ]] && kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then
         kill -TERM "$ACTIVE_CHILD_PID" 2>/dev/null || true
         for _ in $(seq 1 60); do kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null || break; sleep 2; done
-        kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true
+        if kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true; fi
+        wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
+        ACTIVE_CHILD_PID=""
     fi
-    scontrol requeue "$(current_slurm_element_id)" || log "scontrol requeue failed"
+    element_id=$(current_slurm_element_id)
+    if [[ -z "$element_id" ]]; then
+        log "ERROR: cannot requeue: current Slurm element ID is empty"
+        exit 75
+    fi
+    log "INFO: requeueing_array_element=${element_id}"
+    if ! scontrol requeue "$element_id"; then
+        log "ERROR: scontrol requeue failed for ${element_id}"
+        exit 75
+    fi
     exit 0
 }
 trap handle_sample_requeue USR1
@@ -200,11 +281,18 @@ trap handle_sample_requeue USR1
 run_stage() {
     local stage=$1 stage_log=$2; shift 2
     ACTIVE_STAGE=$stage; ACTIVE_STAGE_LOG=$stage_log
+    mkdir -p "$(dirname "$stage_log")"
     set +e
     ( cd "${SAMPLE_WORK_ROOT}/nextflow_launch/${stage}"; "$@" ) > >(tee -a "$stage_log") 2> >(tee -a "$stage_log" >&2) &
     ACTIVE_CHILD_PID=$!; wait "$ACTIVE_CHILD_PID"; local rc=$?; ACTIVE_CHILD_PID=""; set -e
     (( REQUEUE_IN_PROGRESS == 0 )) || return 125
-    (( rc == 0 )) || { FAILED_STAGE=$stage; FAILURE_CLASS=STAGE_FAILED; FAILURE_REASON="${stage} Nextflow exited ${rc}"; return "$rc"; }
+    if (( rc != 0 )); then
+        FAILED_STAGE=$stage
+        if [[ -z "$FAILURE_CLASS" || "$FAILURE_CLASS" == UNKNOWN ]]; then
+            FAILURE_CLASS=STAGE_FAILED; FAILURE_REASON="${stage} Nextflow exited ${rc}"
+        fi
+        return "$rc"
+    fi
 }
 nf() { nextflow -C "$NF_CONFIG_PATH" run "$1" -profile "$PIPELINE_PROFILE" -resume -w "$2" "${@:3}"; }
 file_nonempty() { [[ -s "$1" ]]; }
@@ -297,6 +385,7 @@ write_failure_marker() {
     atomic_write "${STATE_DIR}/${SAMPLE_ID}.failure.tsv" <<EOF
 sample_id\t${SAMPLE_ID}
 reference_name\t${REF_NAME}
+worker_state\tTERMINAL_FAILED
 failed_stage\t${FAILED_STAGE}
 failure_class\t${FAILURE_CLASS}
 failure_reason\t${FAILURE_REASON//$'\n'/ }
@@ -317,14 +406,8 @@ array_task_id\t${SLURM_ARRAY_TASK_ID:-}
 EOF
 }
 
-atomic_write "${STATE_DIR}/${SAMPLE_ID}.running.tsv" <<EOF
-sample_id\t${SAMPLE_ID}
-reference_name\t${REF_NAME}
-work_root\t${SAMPLE_WORK_ROOT}
-time\t$(date -u +%FT%TZ)
-EOF
-
 attempt=0; max_attempts=$((1 + IMMEDIATE_SAMPLE_RETRIES)); success=0
+write_running_marker RUNNING "$attempt"
 while (( attempt < max_attempts )); do
     attempt=$((attempt + 1))
     if run_sample_chain; then success=1; break; fi
@@ -332,7 +415,11 @@ while (( attempt < max_attempts )); do
     now=$(date +%s); [[ -n "$FIRST_FAILURE_EPOCH" ]] || FIRST_FAILURE_EPOCH=$now
     record_attempt "$attempt"; classify_sample_failure
     (( FAILURE_NONRETRYABLE == 0 )) || break
-    if (( attempt < max_attempts )); then log "Immediate retry ${attempt}/${IMMEDIATE_SAMPLE_RETRIES}"; sleep "$IMMEDIATE_RETRY_DELAY_SECONDS"; fi
+    if (( attempt < max_attempts )); then
+        write_running_marker IMMEDIATE_RETRY "$attempt"
+        log "Immediate retry ${attempt}/${IMMEDIATE_SAMPLE_RETRIES}"
+        sleep "$IMMEDIATE_RETRY_DELAY_SECONDS"
+    fi
 done
 
 if (( success )); then

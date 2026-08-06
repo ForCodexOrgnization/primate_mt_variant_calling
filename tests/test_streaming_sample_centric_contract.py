@@ -23,7 +23,8 @@ assert "#SBATCH --requeue" in SCRIPT and "#SBATCH --signal=B:USR1@300" in SCRIPT
 handler = SCRIPT[SCRIPT.index("handle_sample_requeue()") : SCRIPT.index("trap handle_sample_requeue USR1")]
 for item in ("TIMEOUT_SIGNAL", "resume_eligible\\t1", 'kill -TERM "$ACTIVE_CHILD_PID"',
              "for _ in $(seq 1 60)", 'kill -KILL "$ACTIVE_CHILD_PID"',
-             'scontrol requeue "$(current_slurm_element_id)"'):
+             'wait "$ACTIVE_CHILD_PID"', 'write_running_marker REQUEUE_REQUESTED',
+             'scontrol requeue "$element_id"'):
     assert item in handler
 assert "safe_remove" not in handler
 
@@ -53,5 +54,16 @@ for function in ("safe_remove_sample_stage_work()", "safe_remove_sample_work()",
     assert function in SCRIPT
 assert 'rm -rf -- "$target"' in SCRIPT
 assert 'sbatch_args=(--export=ALL "--array=1-${NUM_SAMPLES}%${MAX_CONCURRENT}")' in SCRIPT
-assert 'sbatch "${sbatch_args[@]}" "$0"' in SCRIPT
+assert 'submission=$(sbatch "${sbatch_args[@]}" "$0")' in SCRIPT
+assert "printf '%s\\n' \"$submission\"" in SCRIPT
+assert 'SAMPLE_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$NORMALIZED_SAMPLE_LIST")' in SCRIPT
+
+slurm_id = SCRIPT[SCRIPT.index("current_slurm_element_id()") : SCRIPT.index("write_running_marker()")]
+assert "printf '%s_%s\\n'" in slurm_id
+assert "printf '%s\\n' \"${SLURM_JOB_ID:-}\"" in slurm_id
+assert 'worker_state\\tTERMINAL_FAILED' in SCRIPT
+assert 'write_running_marker IMMEDIATE_RETRY "$attempt"' in SCRIPT
+assert '[[ -z "$FAILURE_CLASS" || "$FAILURE_CLASS" == UNKNOWN ]]' in SCRIPT
+assert 'mkdir -p "$(dirname "$stage_log")"' in SCRIPT
+assert 'STREAM_SMOKE_TEST=1 requires exactly one normalized sample' in SCRIPT
 print("sample-centric streaming source contract: PASS")
