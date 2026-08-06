@@ -32,6 +32,7 @@ IMMEDIATE_RETRY_DELAY_SECONDS="${IMMEDIATE_RETRY_DELAY_SECONDS:-60}"
 NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
 SAMTOOLS_MODULE="${SAMTOOLS_MODULE:-}"
 STREAM_SMOKE_TEST="${STREAM_SMOKE_TEST:-0}"
+PIPELINE_REPO_DIR="${PIPELINE_REPO_DIR:-}"
 
 ACTIVE_STAGE=""
 ACTIVE_CHILD_PID=""
@@ -52,29 +53,47 @@ truthy() { [[ "$1" == 1 || "$1" == true ]]; }
 load_required_tools() {
     local tool module_name executable version
     for tool in nextflow samtools; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            if [[ "$tool" == nextflow ]]; then module_name=$NEXTFLOW_MODULE; else module_name=$SAMTOOLS_MODULE; fi
-            [[ -n "$module_name" ]] || die "$tool is not in PATH and ${tool^^}_MODULE is empty"
-            command -v module >/dev/null 2>&1 || die "$tool is not in PATH and the module command is unavailable"
+        if [[ "$tool" == nextflow ]]; then module_name=$NEXTFLOW_MODULE; else module_name=$SAMTOOLS_MODULE; fi
+        if [[ -n "$module_name" ]]; then
+            command -v module >/dev/null 2>&1 || die "${tool^^}_MODULE is configured, but the module command is unavailable"
             module load "$module_name" || die "Unable to load module $module_name for $tool"
+            hash -r
+        elif ! command -v "$tool" >/dev/null 2>&1; then
+            die "$tool is not in PATH and ${tool^^}_MODULE is empty"
         fi
         command -v "$tool" >/dev/null 2>&1 || die "$tool is unavailable after environment setup"
         executable=$(command -v "$tool")
         if [[ "$tool" == nextflow ]]; then
-            version=$(nextflow -version 2>&1 | head -n 1)
+            version=$(nextflow -version 2>&1 | awk 'NF && !found {print; found=1}')
         else
-            version=$(samtools --version 2>&1 | head -n 1)
+            version=$(samtools --version 2>&1 | awk 'NF && !found {print; found=1}')
         fi
+        [[ -n "$version" ]] || die "Unable to determine $tool version"
         log "INFO: ${tool}_executable=${executable}"
         log "INFO: ${tool}_version=${version}"
     done
 }
 
-if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
-    REPO_DIR=$(realpath -m "${SLURM_SUBMIT_DIR}")
+if [[ -n "$PIPELINE_REPO_DIR" ]]; then
+    REPO_DIR=$(realpath -m "$PIPELINE_REPO_DIR")
 else
     REPO_DIR=$(realpath -m "$(dirname "${BASH_SOURCE[0]}")")
 fi
+case "$REPO_DIR" in
+    /var/spool/slurmd/job*) die "Refusing to use Slurm spool directory as pipeline repository: $REPO_DIR" ;;
+esac
+export PIPELINE_REPO_DIR="$REPO_DIR"
+log "INFO: pipeline_repo_dir=${REPO_DIR}"
+
+required_pipeline_scripts=(
+    "${REPO_DIR}/preprocessing.nf"
+    "${REPO_DIR}/numt_detection/numt_end2end.nf"
+    "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf"
+    "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf"
+)
+for pipeline_script in "${required_pipeline_scripts[@]}"; do
+    [[ -s "$pipeline_script" ]] || die "Required pipeline script is missing: $pipeline_script"
+done
 
 for variable in FULL_SAMPLE_LIST PRE_OUTPUT_DIR ROUND_OUTPUT_DIR NF_BASE_WORK_DIR NF_CONFIG_FILE GLOBAL_REF_DIR REF_DIR NUCLEAR_ONLY_REF_DIR; do require_value "$variable"; done
 [[ -f "$FULL_SAMPLE_LIST" ]] || die "FULL_SAMPLE_LIST does not exist: $FULL_SAMPLE_LIST"
