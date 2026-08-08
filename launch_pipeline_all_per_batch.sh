@@ -48,6 +48,7 @@ NF_CONFIG_FILE="${NF_CONFIG_FILE:-nextflow.config}"
 CLEAN_ON_SUCCESS="${CLEAN_ON_SUCCESS:-1}"
 ENABLE_CHUNKED_ALIGNMENT="${ENABLE_CHUNKED_ALIGNMENT:-true}"
 NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
+PIPELINE_REPO_DIR="${PIPELINE_REPO_DIR:-}"
 export NEXTFLOW_MODULE
 
 ACTIVE_CHILD_PID=""
@@ -65,6 +66,45 @@ CLASSIFIED_CLEANUP_AFTER_TERMINAL=1
 
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
+
+if [[ -n "${PIPELINE_REPO_DIR}" ]]; then
+    REPO_DIR="$(realpath -m "${PIPELINE_REPO_DIR}")"
+else
+    REPO_DIR="$(realpath -m "$(dirname "${BASH_SOURCE[0]}")")"
+fi
+case "${REPO_DIR}" in
+    /var/spool/slurmd/job*) fail "Refusing to use Slurm spool directory as pipeline repository: ${REPO_DIR}" ;;
+esac
+export PIPELINE_REPO_DIR="${REPO_DIR}"
+log "INFO: pipeline_repo_dir=${REPO_DIR}"
+
+repo_path() {
+    if [[ "$1" = /* ]]; then
+        realpath -m "$1"
+    else
+        realpath -m "${REPO_DIR}/$1"
+    fi
+}
+
+PRE_LAUNCH_SCRIPT="$(repo_path "${PRE_LAUNCH_SCRIPT}")"
+NUMT_LAUNCH_SCRIPT="$(repo_path "${NUMT_LAUNCH_SCRIPT}")"
+ROUND1_LAUNCH_SCRIPT="$(repo_path "${ROUND1_LAUNCH_SCRIPT}")"
+ROUND2_LAUNCH_SCRIPT="$(repo_path "${ROUND2_LAUNCH_SCRIPT}")"
+LAUNCHER_SCRIPT="${REPO_DIR}/launch_pipeline_all_per_batch.sh"
+
+required_pipeline_scripts=(
+    "${LAUNCHER_SCRIPT}"
+    "${PRE_LAUNCH_SCRIPT}"
+    "${NUMT_LAUNCH_SCRIPT}"
+    "${ROUND1_LAUNCH_SCRIPT}"
+    "${ROUND2_LAUNCH_SCRIPT}"
+    "${REPO_DIR}/preprocessing.nf"
+    "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf"
+    "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf"
+)
+for pipeline_script in "${required_pipeline_scripts[@]}"; do
+    [[ -s "${pipeline_script}" ]] || fail "Required pipeline script is missing: ${pipeline_script}"
+done
 
 current_slurm_element_id() {
     if [[ -n "${SLURM_ARRAY_JOB_ID:-}" &&
@@ -264,13 +304,8 @@ load_nextflow() {
     nextflow -version
 }
 
-if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/preprocessing.nf" ]]; then
-    repo_dir="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
-else
-    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
-cd "${repo_dir}"
-NF_CONFIG_PATH="$(if [[ "${NF_CONFIG_FILE}" = /* ]]; then printf '%s' "${NF_CONFIG_FILE}"; else printf '%s' "${repo_dir}/${NF_CONFIG_FILE}"; fi)"
+cd "${REPO_DIR}"
+NF_CONFIG_PATH="$(repo_path "${NF_CONFIG_FILE}")"
 [[ -s "${NF_CONFIG_PATH}" ]] || fail "NF_CONFIG_FILE does not exist or is empty: ${NF_CONFIG_PATH}"
 mkdir -p "${LOG_DIR}"
 
@@ -631,7 +666,8 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     [[ "${NUM_BATCHES}" -gt 0 ]] || fail "No batch files were created under ${BATCH_LIST_DIR}"
     ARRAY_INDEX=$((NUM_BATCHES - 1))
     log "Submitting ${NUM_BATCHES} independent batch-chain jobs with concurrency ${CHAIN_CONCURRENT_BATCHES}"
-    sbatch --array=0-${ARRAY_INDEX}%${CHAIN_CONCURRENT_BATCHES} "$0"
+    export PIPELINE_REPO_DIR="${REPO_DIR}"
+    sbatch --array=0-${ARRAY_INDEX}%${CHAIN_CONCURRENT_BATCHES} "${LAUNCHER_SCRIPT}"
     exit 0
 fi
 
