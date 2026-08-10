@@ -320,8 +320,8 @@ process DOWNLOAD_FASTQ {
     tag "${meta.id}"
     label 'down_task'
     
-    // Retry transient task-level failures, then skip only the bad sample so the batch can continue.
-    errorStrategy { task.attempt <= 2 ? 'retry' : 'ignore' }
+    // Retry transient failures; deterministic ENA metadata/layout failures exit 42 immediately.
+    errorStrategy { task.exitStatus == 42 ? 'terminate' : (task.attempt <= 2 ? 'retry' : 'ignore') }
     maxRetries 2
 
     input:
@@ -367,7 +367,7 @@ process DOWNLOAD_FASTQ {
     if ! curl -fsSLG "\${ena_base}/filereport" \
         --data-urlencode "accession=\${acc}" \
         --data-urlencode "result=read_run" \
-        --data-urlencode "fields=run_accession,fastq_ftp,fastq_md5" \
+        --data-urlencode "fields=run_accession,library_layout,fastq_ftp,fastq_md5" \
         --data-urlencode "format=tsv" \
         -o report.tsv; then
         echo "WARN: ENA filereport failed for \${acc}; trying read_run search by accession/sample alias." >&2
@@ -375,13 +375,17 @@ process DOWNLOAD_FASTQ {
         curl -fsSLG "\${ena_base}/search" \
             --data-urlencode "result=read_run" \
             --data-urlencode "query=\${ena_query}" \
-            --data-urlencode "fields=run_accession,fastq_ftp,fastq_md5" \
+            --data-urlencode "fields=run_accession,library_layout,fastq_ftp,fastq_md5" \
             --data-urlencode "format=tsv" \
             -o report.tsv
     fi
 
+    expected_header=\$'run_accession\tlibrary_layout\tfastq_ftp\tfastq_md5'
+    if [[ "\$(head -n 1 report.tsv | tr -d '\\r')" != "\$expected_header" ]]; then
+        echo "ERROR: DETERMINISTIC_FASTQ_FAILURE class=MALFORMED_ENA_METADATA run=\${acc} reason=unexpected ENA report header" >&2; exit 42
+    fi
     if [[ \$(tail -n +2 report.tsv | wc -l) -eq 0 ]]; then
-        echo "ERROR: No runs found for \${acc}. Checked ENA accession fields and sample_alias." >&2; exit 1
+        echo "ERROR: DETERMINISTIC_FASTQ_FAILURE class=MALFORMED_ENA_METADATA run=\${acc} reason=no runs found after accession and alias queries" >&2; exit 42
     fi
 
     # 2. 准备输出清单
@@ -397,28 +401,15 @@ process DOWNLOAD_FASTQ {
         echo -e "${meta.id}\t\${failed_run_id}\t\${failed_fastq}\t\${reason}" >> failed_download.tsv
     }
 
-    # 3. 循环下载并验证 MD5
-    tail -n +2 report.tsv | while IFS=\$'\\t' read -r run_id ftp_urls md5s; do
-        IFS=';' read -r -a urls <<< "\$ftp_urls"
-        IFS=';' read -r -a mds <<< "\$md5s"
-
-        if [[ \${#urls[@]} -eq 2 ]]; then
-            layout="PE"
-            echo "INFO: Run \$run_id detected as paired-end."
-        elif [[ \${#urls[@]} -eq 1 ]]; then
-            layout="SE"
-            echo "INFO: Run \$run_id detected as single-end."
-        else
-            echo "ERROR: Run \$run_id has unsupported number of FASTQ URLs: \${#urls[@]}." >&2
-            record_failed_download "\$run_id" "." "UNSUPPORTED_FASTQ_URL_COUNT_\${#urls[@]}"
-            exit 1
+    # 3. Classify filenames first; the helper preserves each URL/MD5 index pair.
+    source "${projectDir}/scripts/classify_ena_fastq.sh"
+    tail -n +2 report.tsv | while IFS=\$'\t' read -r run_id library_layout ftp_urls md5s; do
+        if ! classify_ena_fastq "\$run_id" "\$library_layout" "\$ftp_urls" "\$md5s"; then
+            # Classifier failures are deterministic metadata/layout errors.
+            exit 42
         fi
-
-        if [[ \${#mds[@]} -ne \${#urls[@]} ]]; then
-            echo "ERROR: Run \$run_id has \${#urls[@]} FASTQ URLs but \${#mds[@]} MD5 values." >&2
-            record_failed_download "\$run_id" "." "MD5_URL_COUNT_MISMATCH"
-            exit 1
-        fi
+        layout=\$FASTQ_LAYOUT
+        echo "INFO: run=\$run_id metadata_layout=\$library_layout detected_layout=\$FASTQ_DETECTED_LAYOUT alignment_layout=\$layout"
 
         download_and_verify_fastq() {
             local url="\$1"
@@ -504,29 +495,21 @@ process DOWNLOAD_FASTQ {
             return 1
         }
 
-        # 下载 FASTQ；只有 gzip -t 和 ENA fastq_md5 都通过才写入下游清单
+        # Download only classifier-selected inputs; orphan FASTQs are intentionally ignored.
         if [[ "\$layout" == "PE" ]]; then
-            for i in 0 1; do
-                url="https://\${urls[\$i]}"
-                target="fastqs/\${run_id}_\$((i+1)).fastq.gz"
-
-                if ! download_and_verify_fastq "\$url" "\$target" "\${mds[\$i]}" "\$run_id"; then
-                    echo "ERROR: Download/validation failed for \$target; failing this sample so Nextflow can retry or ignore it." >&2
-                    exit 1
-                fi
-            done
-
-            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t\$run_id\\tPE\\t\$PWD/fastqs/\${run_id}_1.fastq.gz\\t\$PWD/fastqs/\${run_id}_2.fastq.gz\\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
-        elif [[ "\$layout" == "SE" ]]; then
-            url="https://\${urls[0]}"
-            target="fastqs/\${run_id}.fastq.gz"
-
-            if ! download_and_verify_fastq "\$url" "\$target" "\${mds[0]}" "\$run_id"; then
-                echo "ERROR: Download/validation failed for \$target; failing this sample so Nextflow can retry or ignore it." >&2
-                exit 1
+            if ! download_and_verify_fastq "https://\$FASTQ_R1_URL" "fastqs/\${run_id}_1.fastq.gz" "\$FASTQ_R1_MD5" "\$run_id"; then
+                echo "ERROR: Download/validation failed for run \$run_id R1; failing this sample so Nextflow can retry or ignore it." >&2; exit 1
             fi
-
-            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t\$run_id\\tSE\\t\$PWD/fastqs/\${run_id}.fastq.gz\\t.\\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
+            if ! download_and_verify_fastq "https://\$FASTQ_R2_URL" "fastqs/\${run_id}_2.fastq.gz" "\$FASTQ_R2_MD5" "\$run_id"; then
+                echo "ERROR: Download/validation failed for run \$run_id R2; failing this sample so Nextflow can retry or ignore it." >&2; exit 1
+            fi
+            echo -e "${meta.id}\t${species_name}\t${ref_name}\t\$run_id\tPE\t\$PWD/fastqs/\${run_id}_1.fastq.gz\t\$PWD/fastqs/\${run_id}_2.fastq.gz\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
+        else
+            target="fastqs/\$(basename "\$FASTQ_R1_URL")"
+            if ! download_and_verify_fastq "https://\$FASTQ_R1_URL" "\$target" "\$FASTQ_R1_MD5" "\$run_id"; then
+                echo "ERROR: Download/validation failed for run \$run_id SE; failing this sample so Nextflow can retry or ignore it." >&2; exit 1
+            fi
+            echo -e "${meta.id}\t${species_name}\t${ref_name}\t\$run_id\tSE\t\$PWD/\$target\t.\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
         fi
     done
 

@@ -307,6 +307,18 @@ run_stage() {
     (( REQUEUE_IN_PROGRESS == 0 )) || return 125
     if (( rc != 0 )); then
         FAILED_STAGE=$stage
+        # DOWNLOAD_FASTQ emits this stable marker for deterministic ENA
+        # metadata/layout failures.  Preserve it instead of replacing it with
+        # a generic CRAM validation error, and suppress the outer retry.
+        if [[ "$stage" == pre && -f "$stage_log" ]]; then
+            local root_cause
+            root_cause=$(awk '/DETERMINISTIC_FASTQ_FAILURE class=/{line=$0} END{print line}' "$stage_log")
+            if [[ "$root_cause" =~ class=([^[:space:]]+)[[:space:]]+run=([^[:space:]]+)[[:space:]]+reason=(.*)$ ]]; then
+                FAILURE_CLASS=${BASH_REMATCH[1]}
+                FAILURE_REASON="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+                FAILURE_NONRETRYABLE=1
+            fi
+        fi
         if [[ -z "$FAILURE_CLASS" || "$FAILURE_CLASS" == UNKNOWN ]]; then
             FAILURE_CLASS=STAGE_FAILED; FAILURE_REASON="${stage} Nextflow exited ${rc}"
         fi
@@ -389,7 +401,7 @@ run_sample_chain() {
 }
 
 record_attempt() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$(date +%s)" "$FAILED_STAGE" "$FAILURE_CLASS" "$FAILURE_REASON" >>"${METADATA_DIR}/attempts.tsv"; }
-classify_sample_failure() { case "$FAILURE_CLASS" in MISSING_REFERENCE|MALFORMED_METADATA|UNSUPPORTED_REFERENCE|UNSAFE_PATH|FINGERPRINT_GENERATION_FAILED) FAILURE_NONRETRYABLE=1;; esac; }
+classify_sample_failure() { case "$FAILURE_CLASS" in MISSING_REFERENCE|MALFORMED_METADATA|UNSUPPORTED_REFERENCE|UNSAFE_PATH|FINGERPRINT_GENERATION_FAILED|UNSUPPORTED_FASTQ_LAYOUT|AMBIGUOUS_FASTQ_LAYOUT|MD5_URL_COUNT_MISMATCH|MALFORMED_ENA_METADATA|MISSING_R1|MISSING_R2|DUPLICATE_R1|DUPLICATE_R2) FAILURE_NONRETRYABLE=1;; esac; }
 collect_diagnostics() {
     local d="${METADATA_DIR}/diagnostics.$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$d"
     [[ -f "$ACTIVE_STAGE_LOG" ]] && tail -n 500 "$ACTIVE_STAGE_LOG" >"$d/stage.log.tail" || true
