@@ -357,36 +357,10 @@ process DOWNLOAD_FASTQ {
 
     # Do not remove fastqs here. Keep completed or partial downloads so aria2c -c can resume.
     rm -f report.tsv fastq_pairs.tsv failed_download.tsv
-    ena_base="https://www.ebi.ac.uk/ena/portal/api"
     acc="${meta.id}"
-
-    # 1. 获取 Run IDs
-    # ENA filereport accepts INSDC accessions, but some sample sheets use aliases
-    # such as HG00119. If filereport returns HTTP 400, fall back to the Portal
-    # advanced search API and resolve the alias to read_run records.
-    if ! curl -fsSLG "\${ena_base}/filereport" \
-        --data-urlencode "accession=\${acc}" \
-        --data-urlencode "result=read_run" \
-        --data-urlencode "fields=run_accession,library_layout,fastq_ftp,fastq_md5" \
-        --data-urlencode "format=tsv" \
-        -o report.tsv; then
-        echo "WARN: ENA filereport failed for \${acc}; trying read_run search by accession/sample alias." >&2
-        ena_query="run_accession=\"\${acc}\" OR experiment_accession=\"\${acc}\" OR study_accession=\"\${acc}\" OR secondary_study_accession=\"\${acc}\" OR sample_accession=\"\${acc}\" OR secondary_sample_accession=\"\${acc}\" OR sample_alias=\"\${acc}\""
-        curl -fsSLG "\${ena_base}/search" \
-            --data-urlencode "result=read_run" \
-            --data-urlencode "query=\${ena_query}" \
-            --data-urlencode "fields=run_accession,library_layout,fastq_ftp,fastq_md5" \
-            --data-urlencode "format=tsv" \
-            -o report.tsv
-    fi
-
-    expected_header=\$'run_accession\tlibrary_layout\tfastq_ftp\tfastq_md5'
-    if [[ "\$(head -n 1 report.tsv | tr -d '\\r')" != "\$expected_header" ]]; then
-        echo "ERROR: DETERMINISTIC_FASTQ_FAILURE class=MALFORMED_ENA_METADATA run=\${acc} reason=unexpected ENA report header" >&2; exit 42
-    fi
-    if [[ \$(tail -n +2 report.tsv | wc -l) -eq 0 ]]; then
-        echo "ERROR: DETERMINISTIC_FASTQ_FAILURE class=MALFORMED_ENA_METADATA run=\${acc} reason=no runs found after accession and alias queries" >&2; exit 42
-    fi
+    # Resolve direct ENA records, aliases, and (last) NCBI SRA metadata.  FASTQ
+    # transfer remains ENA/aria2 and all downstream classification is unchanged.
+    "${projectDir}/scripts/resolve_read_runs.sh" "\${acc}" report.tsv
 
     # 2. 准备输出清单
     rm -f fastq_pairs.tmp

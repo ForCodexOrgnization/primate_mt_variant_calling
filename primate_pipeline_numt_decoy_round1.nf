@@ -1063,7 +1063,11 @@ EOFJSON
 process RUN_WDL_VARIANT_CALLING {
     tag "Variant Calling on ${meta.id}"
     label 'wdl_related'
-    publishDir "${params.outdir}/${meta.id}/round_1_variant_calling_decoy/", mode: 'copy'
+    // Authoritative ROUND1_MTDNA_CONSENSUS_VCF.  Although the historical file
+    // stem says "numt_decoy", this WDL consumes the cleaned chrM-only CRAM and
+    // therefore emits mtDNA-coordinate variants.  Keep it distinct from the
+    // CALL_NUMT_VARIANTS_DECOY products used for NUMT consensus.
+    publishDir "${params.outdir}/${meta.id}/round_1/mtdna_variant_calling/", mode: 'copy'
 
     input:
     tuple val(meta), path(wdl_inputs_json)

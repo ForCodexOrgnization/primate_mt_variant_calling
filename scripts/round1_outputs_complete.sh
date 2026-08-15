@@ -37,4 +37,14 @@ for relative in "${required[@]}"; do
     missing=1
   fi
 done
+
+# ROUND1_MTDNA_CONSENSUS_VCF: WDL calls made from the cleaned chrM-only CRAM.
+# Cromwell preserves its execution tree, so locate the exact sample product
+# recursively.  This is scientifically distinct from the NUMT VCFs above.
+if ! find "$root/mtdna_variant_calling" -type f \
+    -name "${sample}.numt_decoy.clean.final.split.vcf" -size +0c -print -quit \
+    2>/dev/null | grep -q .; then
+  printf 'MISSING %s\n' "$root/mtdna_variant_calling/**/${sample}.numt_decoy.clean.final.split.vcf" >&2
+  missing=1
+fi
 exit "$missing"
