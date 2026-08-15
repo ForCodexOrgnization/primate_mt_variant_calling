@@ -88,11 +88,17 @@ ch_samples = Channel.fromPath(params.sample_tsv)
         def species_name = row[1].trim()
         def ref_name = row.size() >= 3 && row[2]?.trim() ? row[2].trim() : species_name
 
-        def round2_dir = file("${params.outdir}/${sample_id}/round_2")
+        // Match the streaming launcher's stage-level Round2 contract. Merely
+        // having output directories is not completion after an interrupted publish.
         def original_coords_dir = file("${params.outdir}/${sample_id}/round_2_variant_calling_original_coords")
+        def requiredRound2Paths = [
+            file("${original_coords_dir}/${sample_id}.round2.original_coords.clean.final.split.vcf.gz"),
+            file("${original_coords_dir}/${sample_id}.round2.original_coords.per_base_coverage.tsv"),
+            file("${params.outdir}/${sample_id}/round_2/mtcn/${sample_id}.round2.mtcn.tsv")
+        ]
 
-        if (round2_dir.exists() && original_coords_dir.exists()) {
-            log.info "SKIP completed sample ${sample_id}: ${round2_dir} and ${original_coords_dir} already exist"
+        if (requiredRound2Paths.every { it.exists() && it.size() > 0 }) {
+            log.info "SKIP completed sample ${sample_id}: current Round2 outputs already exist"
             return null
         }
 

@@ -90,6 +90,7 @@ required_pipeline_scripts=(
     "${REPO_DIR}/numt_detection/numt_end2end.nf"
     "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf"
     "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf"
+    "${REPO_DIR}/scripts/round1_outputs_complete.sh"
 )
 for pipeline_script in "${required_pipeline_scripts[@]}"; do
     [[ -s "$pipeline_script" ]] || die "Required pipeline script is missing: $pipeline_script"
@@ -331,10 +332,7 @@ find_nonempty() { find "$1" -type f -name "$2" -size +0c -print -quit 2>/dev/nul
 
 CRAM_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram"; CRAI_PATH="${CRAM_PATH}.crai"
 NUMT_BED="${NUMT_BESTHIT_OUTDIR}/${SAMPLE_ID}.highconf_numt.bed"
-ROUND1_BAM="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/candidate_reads/${SAMPLE_ID}.with_mates.bam"
 ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1_variant_calling_decoy"
-ROUND1_NUMT_FA="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_ref/${SAMPLE_ID}.original_numt.fa"
-ROUND1_NUMT_VCF="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/numt_decoy_variant_calling/${SAMPLE_ID}.numt_decoy.raw.vcf.gz"
 ROUND2_VCF_DIR="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2_variant_calling_original_coords"
 ROUND2_VCF="${ROUND2_VCF_DIR}/${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
 ROUND2_COVERAGE="${ROUND2_VCF_DIR}/${SAMPLE_ID}.round2.original_coords.per_base_coverage.tsv"
@@ -342,7 +340,7 @@ ROUND2_MTCN="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2/mtcn/${SAMPLE_ID}.round2.m
 
 pre_complete() { [[ -s "$CRAM_PATH" && -s "$CRAI_PATH" ]] && samtools quickcheck "$CRAM_PATH"; }
 numt_complete() { [[ -e "$NUMT_BED" ]]; }
-round1_complete() { [[ -s "$ROUND1_BAM" && -e "$ROUND1_NUMT_FA" && -s "$ROUND1_NUMT_VCF" && -s "${ROUND1_NUMT_VCF}.tbi" ]] && find_nonempty "$ROUND1_VCF_DIR" "${SAMPLE_ID}.numt_decoy.clean.final.split.vcf"; }
+round1_complete() { "${REPO_DIR}/scripts/round1_outputs_complete.sh" "$ROUND1_OUTDIR" "$SAMPLE_ID"; }
 round2_complete() { [[ -s "$ROUND2_VCF" && -s "$ROUND2_COVERAGE" && -s "$ROUND2_MTCN" ]]; }
 numt_decoy_coverage_path() { find "$ROUND1_VCF_DIR" -type f \( -name '*per_base_coverage*' -o -name '*per-base*coverage*' \) -size +0c -print -quit 2>/dev/null; }
 final_outputs_complete() {
@@ -394,7 +392,7 @@ run_sample_chain() {
     if ! numt_complete; then write_numt_config || return 1; run_stage numt "${LOG_DIR}/numt.log" nf "${REPO_DIR}/numt_detection/numt_end2end.nf" "$NUMT_WORK_DIR" --numt_config "$NUMT_CONFIG" || return; fi
     numt_complete || { FAILED_STAGE=numt; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="NUMT BED missing"; return 1; }; clean_stage "$NUMT_WORK_DIR"
     if ! round1_complete; then run_stage round1 "${LOG_DIR}/round1.log" nf "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" "$ROUND1_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND1_OUTDIR" --cram_dirs "$PRE_OUTPUT_DIR" --numt_bed_dir "$NUMT_BESTHIT_OUTDIR" || return; fi
-    round1_complete || { FAILED_STAGE=round1; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Round 1 outputs incomplete"; return 1; }; clean_stage "$ROUND1_WORK_DIR"
+    round1_complete || { FAILED_STAGE=round1; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Authoritative Round 1 outputs incomplete"; FAILURE_NONRETRYABLE=1; return 1; }; clean_stage "$ROUND1_WORK_DIR"
     if ! round2_complete; then run_stage round2 "${LOG_DIR}/round2.log" nf "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" "$ROUND2_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND_OUTPUT_DIR" --round1_outdir "$ROUND1_OUTDIR" || return; fi
     # Do not clean round2 until the complete eight-part final validation succeeds.
     final_outputs_complete || { FAILED_STAGE=round2; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Final eight-part output validation failed"; return 1; }
