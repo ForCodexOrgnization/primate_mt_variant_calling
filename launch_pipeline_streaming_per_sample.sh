@@ -326,7 +326,10 @@ run_stage() {
         return "$rc"
     fi
 }
-nf() { nextflow -C "$NF_CONFIG_PATH" run "$1" -profile "$PIPELINE_PROFILE" -resume -w "$2" "${@:3}"; }
+# Use -c (rather than -C) so the site config is layered on nextflow.config.
+# Semantic pipeline contracts remain defined by the main config while the
+# selected file supplies only site-specific paths and executor settings.
+nf() { nextflow -c "$NF_CONFIG_PATH" run "$1" -profile "$PIPELINE_PROFILE" -resume -w "$2" "${@:3}"; }
 file_nonempty() { [[ -s "$1" ]]; }
 find_nonempty() { find "$1" -type f -name "$2" -size +0c -print -quit 2>/dev/null | grep -q .; }
 

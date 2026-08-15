@@ -18,13 +18,20 @@ files=(
  "alignment_numt_decoy/$sample.numt_decoy.clean.cram" "alignment_numt_decoy/$sample.numt_decoy.clean.cram.crai"
 )
 for f in "${files[@]}"; do mkdir -p "$root/${f%/*}"; : >"$root/$f"; done
-mkdir -p "$root/mtdna_variant_calling/cromwell-executions/call-AlignAndCall"
-printf '##fileformat=VCFv4.2\n' >"$root/mtdna_variant_calling/cromwell-executions/call-AlignAndCall/$sample.numt_decoy.clean.final.split.vcf"
+vcf_tree="$root/mtdna_variant_calling/cromwell-executions/MitochondriaMultiSamplePipeline/fake-workflow-id/call-SplitMultiAllelicSites/shard-0/execution"
+mkdir -p "$vcf_tree"
+printf '##fileformat=VCFv4.2\n' >"$vcf_tree/$sample.numt_decoy.clean.final.split.vcf"
 
 # Production regression: the obsolete launcher-only WDL VCF is absent, but the
 # exact current workflow skip contract is complete.
 [[ ! -e "$tmp/results/$sample/round_1_variant_calling_decoy/$sample.numt_decoy.clean.final.split.vcf" ]]
 "$checker" "$tmp/results" "$sample"
+
+# Mirror FIND_ROUND1_OUTPUTS' exact-name recursive discovery and prove the
+# current Cromwell tree is selected without creating the legacy directory.
+mapfile -t round2_hits < <(find "$root/mtdna_variant_calling" -type f -name "$sample.numt_decoy.clean.final.split.vcf" | sort)
+[[ ${#round2_hits[@]} -eq 1 ]]
+[[ "${round2_hits[0]}" == "$vcf_tree/$sample.numt_decoy.clean.final.split.vcf" ]]
 
 # A genuinely required current index makes the sample incomplete.
 rm "$root/candidate_reads/$sample.with_mates.bam.bai"
