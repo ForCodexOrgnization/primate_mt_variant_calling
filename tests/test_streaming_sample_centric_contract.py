@@ -67,3 +67,29 @@ assert '[[ -z "$FAILURE_CLASS" || "$FAILURE_CLASS" == UNKNOWN ]]' in SCRIPT
 assert 'mkdir -p "$(dirname "$stage_log")"' in SCRIPT
 assert 'STREAM_SMOKE_TEST=1 requires exactly one normalized sample' in SCRIPT
 print("sample-centric streaming source contract: PASS")
+
+# Round1 workflow and wrapper delegate to one checker; the obsolete WDL VCF is
+# intentionally not a stage-completion requirement.
+ROUND1 = (Path(__file__).resolve().parents[1] / "primate_pipeline_numt_decoy_round1.nf").read_text()
+CHECKER = (Path(__file__).resolve().parents[1] / "scripts/round1_outputs_complete.sh").read_text()
+assert 'scripts/round1_outputs_complete.sh' in ROUND1
+round1_function = SCRIPT[SCRIPT.index("round1_complete()") : SCRIPT.index("round2_complete()")]
+assert 'scripts/round1_outputs_complete.sh' in round1_function
+assert "round_1_variant_calling_decoy" not in round1_function
+assert "numt_decoy.clean.final.split.vcf" not in CHECKER
+assert 'FAILURE_CLASS=OUTPUT_INCOMPLETE' in SCRIPT
+assert 'FAILURE_REASON="Authoritative Round 1 outputs incomplete"; FAILURE_NONRETRYABLE=1' in SCRIPT
+
+# A non-zero Nextflow stage remains retryable, while deterministic successful
+# execution/output-contract mismatches do not consume an immediate retry.
+run_stage_body = SCRIPT[SCRIPT.index("run_stage()") : SCRIPT.index("nf()")]
+assert "FAILURE_NONRETRYABLE=1" not in run_stage_body.split('if [[ "$stage" == pre')[0]
+assert '(( FAILURE_NONRETRYABLE == 0 )) || break' in SCRIPT
+
+# Other stage paths match their current publishers. Round2 workflow skip logic
+# now checks the same three concrete outputs rather than directory existence.
+ROUND2 = (Path(__file__).resolve().parents[1] / "primate_pipeline_round2_consensus_NUMT.nf").read_text()
+for suffix in ("round2.original_coords.clean.final.split.vcf.gz",
+               "round2.original_coords.per_base_coverage.tsv", "round2.mtcn.tsv"):
+    assert suffix in SCRIPT and suffix in ROUND2
+assert 'requiredRound2Paths.every { it.exists() && it.size() > 0 }' in ROUND2

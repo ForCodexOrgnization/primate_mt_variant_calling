@@ -58,8 +58,8 @@ rm -rf "$spool_dir"
 
 # Every workflow is validated before tools or sbatch are invoked.
 fake_repo="$tmp/incomplete-repo"
-mkdir -p "$fake_repo/numt_detection"
-workflows=(preprocessing.nf numt_detection/numt_end2end.nf primate_pipeline_numt_decoy_round1.nf primate_pipeline_round2_consensus_NUMT.nf)
+mkdir -p "$fake_repo/numt_detection" "$fake_repo/scripts"
+workflows=(preprocessing.nf numt_detection/numt_end2end.nf primate_pipeline_numt_decoy_round1.nf primate_pipeline_round2_consensus_NUMT.nf scripts/round1_outputs_complete.sh)
 for workflow in "${workflows[@]}"; do
     printf 'workflow test\n' >"$fake_repo/$workflow"
 done

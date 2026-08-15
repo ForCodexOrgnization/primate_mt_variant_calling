@@ -13,34 +13,18 @@ def paramToBoolean = { value ->
 }
 
 def sampleHasExistingNumtResults = { String sampleId ->
-    def requiredPaths = [
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.chrM_plus_numt.fa",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.chrM_plus_numt.fa.fai",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.original_numt.fa",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.original_numt.fa.fai",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_ref/${sampleId}.decoy_numt.interval_list",
-        "${params.outdir}/${sampleId}/round_1/candidate_reads/${sampleId}.with_mates.bam",
-        "${params.outdir}/${sampleId}/round_1/candidate_reads/${sampleId}.with_mates.bam.bai",
-        "${params.outdir}/${sampleId}/round_1/decoy_realign/${sampleId}.decoy_realign.bam",
-        "${params.outdir}/${sampleId}/round_1/decoy_realign/${sampleId}.decoy_realign.bam.bai",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.raw.vcf.gz",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.raw.vcf.gz.tbi",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.pass.split.vcf.gz",
-        "${params.outdir}/${sampleId}/round_1/numt_decoy_variant_calling/${sampleId}.numt_decoy.pass.split.vcf.gz.tbi",
-        "${params.outdir}/${sampleId}/round_1/consensus_numt_ref/${sampleId}.consensus_numt.fa",
-        "${params.outdir}/${sampleId}/round_1/consensus_numt_ref/${sampleId}.consensus_numt.fa.fai",
-        "${params.outdir}/${sampleId}/round_1/chrM_clean/${sampleId}.final_chrM.sorted.bam",
-        "${params.outdir}/${sampleId}/round_1/chrM_clean/${sampleId}.final_chrM.sorted.bam.bai",
-        "${params.outdir}/${sampleId}/round_1/alignment_numt_decoy/${sampleId}.numt_decoy.clean.cram",
-        "${params.outdir}/${sampleId}/round_1/alignment_numt_decoy/${sampleId}.numt_decoy.clean.cram.crai"
-    ]
-
-    def missing = requiredPaths.findAll { !file(it).exists() }
-    if (!missing.isEmpty()) {
-        log.debug "Sample ${sampleId} is not a completed NUMT round1 sample; missing outputs: ${missing.join(', ')}"
+    // The checker is also called by launch_pipeline_streaming_per_sample.sh;
+    // it is the single authoritative Round1 published-output contract.
+    def checker = new File(projectDir.toString(), 'scripts/round1_outputs_complete.sh')
+    def process = new ProcessBuilder(checker.absolutePath, params.outdir.toString(), sampleId)
+        .redirectErrorStream(true)
+        .start()
+    def diagnostics = process.inputStream.text.trim()
+    def status = process.waitFor()
+    if (status != 0) {
+        log.debug "Sample ${sampleId} is not a completed NUMT round1 sample: ${diagnostics}"
         return false
     }
-
     return true
 }
 
