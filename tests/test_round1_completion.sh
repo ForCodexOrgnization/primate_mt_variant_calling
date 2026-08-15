@@ -18,6 +18,8 @@ files=(
  "alignment_numt_decoy/$sample.numt_decoy.clean.cram" "alignment_numt_decoy/$sample.numt_decoy.clean.cram.crai"
 )
 for f in "${files[@]}"; do mkdir -p "$root/${f%/*}"; : >"$root/$f"; done
+mkdir -p "$root/mtdna_variant_calling/cromwell-executions/call-AlignAndCall"
+printf '##fileformat=VCFv4.2\n' >"$root/mtdna_variant_calling/cromwell-executions/call-AlignAndCall/$sample.numt_decoy.clean.final.split.vcf"
 
 # Production regression: the obsolete launcher-only WDL VCF is absent, but the
 # exact current workflow skip contract is complete.

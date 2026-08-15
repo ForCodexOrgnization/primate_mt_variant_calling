@@ -41,7 +41,9 @@ params.round1_consensus_numt_suffix = params.round1_consensus_numt_suffix ?: '.c
 // Expected path by default:
 //   <round1_outdir>/<sample_id>/round_1/<round1_numt_vcf_subdir>/<sample_id><round1_nuc_vcf_suffix>
 params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_variant_calling'
-params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.raw.vcf.gz'
+// ROUND1_NUMT_CONSENSUS_VCF: the filtered PASS split decoy-coordinate calls
+// that GENERATE_CONSENSUS_NUMT_FASTA applies to original_numt.fa.
+params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.pass.split.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
 params.mtcn_nuclear_window_size = params.mtcn_nuclear_window_size ?: 20000
 params.mtcn_nuclear_windows_per_contig = params.mtcn_nuclear_windows_per_contig ?: 3
@@ -175,7 +177,11 @@ process FIND_ROUND1_OUTPUTS {
     SAMPLE_DIR="\${ROUND1_ROOT}/\${SAMPLE_ID}"
 
     BAM_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_bam_subdir}"
+    # ROUND1_MTDNA_CONSENSUS_VCF is the WDL result called from the cleaned
+    # chrM-only CRAM.  Prefer its current Round1 location.  The old top-level
+    # directory is read-only compatibility and is never required for modern runs.
     VCF_ROOT="\${SAMPLE_DIR}/${params.round1_vcf_subdir}"
+    LEGACY_VCF_ROOT="\${SAMPLE_DIR}/round_1_variant_calling_decoy"
     NUMT_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_numt_subdir}"
     CONSENSUS_NUMT_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_consensus_numt_subdir}"
     NUMT_VCF_ROOT="\${SAMPLE_DIR}/round_1/${params.round1_numt_vcf_subdir}"
@@ -191,10 +197,11 @@ process FIND_ROUND1_OUTPUTS {
         exit 1
     }
 
-    [[ -d "\${VCF_ROOT}" ]] || {
-        echo "ERROR: Missing round1 VCF root directory: \${VCF_ROOT}" >&2
-        exit 1
-    }
+    if [[ ! -d "\${VCF_ROOT}" && -d "\${LEGACY_VCF_ROOT}" ]]; then
+        echo "[WARN] Current mtDNA VCF directory absent; using legacy fallback: \${LEGACY_VCF_ROOT}" >&2
+        VCF_ROOT="\${LEGACY_VCF_ROOT}"
+    fi
+    [[ -d "\${VCF_ROOT}" ]] || { echo "ERROR: Missing current round1 mtDNA VCF directory: \${VCF_ROOT}" >&2; exit 1; }
 
     [[ -d "\${NUMT_ROOT}" ]] || {
         echo "ERROR: Missing round1 NUMT FASTA directory: \${NUMT_ROOT}" >&2
@@ -261,7 +268,7 @@ process FIND_ROUND1_OUTPUTS {
     fi
 
     ########################################
-    # 3) Recursively find exact round1 split VCF
+    # 3) ROUND1_MTDNA_CONSENSUS_VCF: recursively find the exact WDL split VCF.
     #    If multiple Cromwell runs exist, select the newest file by modification time.
     ########################################
     expected_vcf_name="\${SAMPLE_ID}${params.round1_vcf_suffix}"
@@ -272,6 +279,16 @@ process FIND_ROUND1_OUTPUTS {
             -name "\${expected_vcf_name}" \
             | sort
     )
+
+    # A partially published current directory must not hide an otherwise valid
+    # legacy mtDNA call.  Current always wins when its exact product exists.
+    if (( \${#vcf_hits[@]} == 0 )) && [[ "\${VCF_ROOT}" != "\${LEGACY_VCF_ROOT}" && -d "\${LEGACY_VCF_ROOT}" ]]; then
+        echo "[WARN] Current mtDNA VCF product absent; searching legacy fallback: \${LEGACY_VCF_ROOT}" >&2
+        VCF_ROOT="\${LEGACY_VCF_ROOT}"
+        mapfile -t vcf_hits < <(
+            find "\${VCF_ROOT}" -type f -name "\${expected_vcf_name}" | sort
+        )
+    fi
 
     if (( \${#vcf_hits[@]} == 0 )); then
         echo "ERROR: Cannot find round1 split VCF for sample \${SAMPLE_ID}" >&2
@@ -314,7 +331,7 @@ process FIND_ROUND1_OUTPUTS {
     tabix -p vcf "\${SAMPLE_ID}.round1.input.vcf.gz"
 
     ########################################
-    # 5) Find and standardize Round 1 decoy-coordinate NUMT VCF for consensus NUMT.
+    # 5) ROUND1_NUMT_CONSENSUS_VCF: filtered PASS split decoy-coordinate VCF.
     #    This is produced by CALL_NUMT_VARIANTS_DECOY under round_1/numt_decoy_variant_calling.
     #    If older Round 1 outputs do not have it, keep original NUMTs by creating a valid empty VCF.
     ########################################

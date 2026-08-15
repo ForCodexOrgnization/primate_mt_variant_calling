@@ -68,15 +68,16 @@ assert 'mkdir -p "$(dirname "$stage_log")"' in SCRIPT
 assert 'STREAM_SMOKE_TEST=1 requires exactly one normalized sample' in SCRIPT
 print("sample-centric streaming source contract: PASS")
 
-# Round1 workflow and wrapper delegate to one checker; the obsolete WDL VCF is
-# intentionally not a stage-completion requirement.
+# Round1 workflow and wrapper delegate to one checker.  The cleaned-chrM WDL
+# VCF is required at its modern location, never at the obsolete top-level path.
 ROUND1 = (Path(__file__).resolve().parents[1] / "primate_pipeline_numt_decoy_round1.nf").read_text()
 CHECKER = (Path(__file__).resolve().parents[1] / "scripts/round1_outputs_complete.sh").read_text()
 assert 'scripts/round1_outputs_complete.sh' in ROUND1
 round1_function = SCRIPT[SCRIPT.index("round1_complete()") : SCRIPT.index("round2_complete()")]
 assert 'scripts/round1_outputs_complete.sh' in round1_function
 assert "round_1_variant_calling_decoy" not in round1_function
-assert "numt_decoy.clean.final.split.vcf" not in CHECKER
+assert 'root/mtdna_variant_calling' in CHECKER
+assert "round_1_variant_calling_decoy" not in CHECKER
 assert 'FAILURE_CLASS=OUTPUT_INCOMPLETE' in SCRIPT
 assert 'FAILURE_REASON="Authoritative Round 1 outputs incomplete"; FAILURE_NONRETRYABLE=1' in SCRIPT
 

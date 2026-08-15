@@ -332,7 +332,7 @@ find_nonempty() { find "$1" -type f -name "$2" -size +0c -print -quit 2>/dev/nul
 
 CRAM_PATH="${PRE_OUTPUT_DIR}/${SAMPLE_ID}/alignment/${SAMPLE_ID}.cram"; CRAI_PATH="${CRAM_PATH}.crai"
 NUMT_BED="${NUMT_BESTHIT_OUTDIR}/${SAMPLE_ID}.highconf_numt.bed"
-ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1_variant_calling_decoy"
+ROUND1_VCF_DIR="${ROUND1_OUTDIR}/${SAMPLE_ID}/round_1/mtdna_variant_calling"
 ROUND2_VCF_DIR="${ROUND_OUTPUT_DIR}/${SAMPLE_ID}/round_2_variant_calling_original_coords"
 ROUND2_VCF="${ROUND2_VCF_DIR}/${SAMPLE_ID}.round2.original_coords.clean.final.split.vcf.gz"
 ROUND2_COVERAGE="${ROUND2_VCF_DIR}/${SAMPLE_ID}.round2.original_coords.per_base_coverage.tsv"
@@ -399,7 +399,7 @@ run_sample_chain() {
 }
 
 record_attempt() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$(date +%s)" "$FAILED_STAGE" "$FAILURE_CLASS" "$FAILURE_REASON" >>"${METADATA_DIR}/attempts.tsv"; }
-classify_sample_failure() { case "$FAILURE_CLASS" in MISSING_REFERENCE|MALFORMED_METADATA|UNSUPPORTED_REFERENCE|UNSAFE_PATH|FINGERPRINT_GENERATION_FAILED|UNSUPPORTED_FASTQ_LAYOUT|AMBIGUOUS_FASTQ_LAYOUT|MD5_URL_COUNT_MISMATCH|MALFORMED_ENA_METADATA|MISSING_R1|MISSING_R2|DUPLICATE_R1|DUPLICATE_R2) FAILURE_NONRETRYABLE=1;; esac; }
+classify_sample_failure() { case "$FAILURE_CLASS" in MISSING_REFERENCE|MALFORMED_METADATA|UNSUPPORTED_REFERENCE|UNSAFE_PATH|FINGERPRINT_GENERATION_FAILED|NO_READ_RUN_RESOLUTION|MALFORMED_SRA_METADATA|UNSUPPORTED_FASTQ_LAYOUT|AMBIGUOUS_FASTQ_LAYOUT|MD5_URL_COUNT_MISMATCH|MALFORMED_ENA_METADATA|MISSING_R1|MISSING_R2|DUPLICATE_R1|DUPLICATE_R2) FAILURE_NONRETRYABLE=1;; esac; }
 collect_diagnostics() {
     local d="${METADATA_DIR}/diagnostics.$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$d"
     [[ -f "$ACTIVE_STAGE_LOG" ]] && tail -n 500 "$ACTIVE_STAGE_LOG" >"$d/stage.log.tail" || true
