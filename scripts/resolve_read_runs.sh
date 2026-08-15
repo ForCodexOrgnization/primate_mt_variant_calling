@@ -24,17 +24,43 @@ fail_sra_metadata() {
     printf 'ERROR: DETERMINISTIC_FASTQ_FAILURE class=MALFORMED_SRA_METADATA run=%s reason=%s\n' "$accession" "$1" >&2
     exit 42
 }
-validate_report() {
-    local report=$1 context=$2 line run layout urls md5s extra
+normalize_discovery_report() {
+    local report=$1 normalized=$2 context=$3
+    if [[ ! -s "$report" ]]; then
+        printf 'WARN: ENA %s discovery returned no metadata; continuing fallback resolution\n' "$context" >&2
+        return 1
+    fi
+    if [[ "$(head -n1 "$report" | tr -d '\r')" != "$header" ]]; then
+        printf 'WARN: ENA %s discovery returned an unexpected header; continuing fallback resolution\n' "$context" >&2
+        return 1
+    fi
+
+    # Discovery responses for sample accessions can mix incomplete sample-level
+    # rows with valid read_run rows. Retain only complete exact-run candidates.
+    awk -F '\t' -v OFS='\t' '
+        NR > 1 {
+            sub(/\r$/, "", $NF)
+            if (NF == 4 && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "") print
+        }
+    ' "$report" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 | awk -F '\t' '!seen[$1]++' >"$normalized.rows"
+    if [[ ! -s "$normalized.rows" ]]; then
+        printf 'WARN: ENA %s discovery returned no usable exact-run rows; continuing fallback resolution\n' "$context" >&2
+        return 1
+    fi
+    { printf '%s\n' "$header"; cat "$normalized.rows"; } >"$normalized"
+}
+validate_exact_run_report() {
+    local report=$1 requested_run=$2
     [[ -s "$report" ]] || return 1
-    [[ "$(head -n1 "$report" | tr -d '\r')" == "$header" ]] || fail_metadata "unexpected_${context}_header"
-    while IFS= read -r line; do
-        line=${line%$'\r'}
-        [[ -n "$line" ]] || continue
-        IFS=$'\t' read -r run layout urls md5s extra <<<"$line"
-        [[ -z "${extra:-}" && "$run" =~ ^(SRR|ERR|DRR)[0-9]+$ && -n "$layout" && -n "$urls" && -n "$md5s" ]] || fail_metadata "structurally_invalid_${context}_row"
-    done < <(tail -n +2 "$report")
-    [[ -n "$(tail -n +2 "$report" | sed '/^[[:space:]]*$/d' | head -n1)" ]]
+    [[ "$(head -n1 "$report" | tr -d '\r')" == "$header" ]] || return 1
+    awk -F '\t' -v requested="$requested_run" '
+        NR > 1 {
+            sub(/\r$/, "", $NF)
+            rows++
+            if (NF == 4 && $1 == requested && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "") usable++
+        }
+        END { exit !(rows == 1 && usable == 1) }
+    ' "$report"
 }
 ena_report() {
     local acc=$1 dest=$2
@@ -52,8 +78,8 @@ write_normalized() {
 # normal miss and advances to the next resolver layer.
 set +e; ena_report "$accession" "$tmp/direct.tsv"; direct_rc=$?; set -e
 [[ $direct_rc -eq 0 || $direct_rc -eq 22 ]] || exit "$direct_rc"
-if [[ $direct_rc -eq 0 ]] && validate_report "$tmp/direct.tsv" direct_ena; then
-    write_normalized "$tmp/direct.tsv"
+if [[ $direct_rc -eq 0 ]] && normalize_discovery_report "$tmp/direct.tsv" "$tmp/direct.usable.tsv" direct_ena; then
+    write_normalized "$tmp/direct.usable.tsv"
     exit 0
 fi
 
@@ -66,8 +92,8 @@ set +e
 search_rc=$?
 set -e
 [[ $search_rc -eq 0 || $search_rc -eq 22 ]] || exit "$search_rc"
-if [[ $search_rc -eq 0 ]] && validate_report "$tmp/search.tsv" advanced_ena; then
-    write_normalized "$tmp/search.tsv"
+if [[ $search_rc -eq 0 ]] && normalize_discovery_report "$tmp/search.tsv" "$tmp/search.usable.tsv" advanced_ena; then
+    write_normalized "$tmp/search.usable.tsv"
     exit 0
 fi
 
@@ -107,10 +133,10 @@ set -e
 
 printf '%s\n' "$header" >"$output"
 while IFS= read -r run; do
-    ena_report "$run" "$tmp/$run.tsv"
-    validate_report "$tmp/$run.tsv" resolved_run_ena || fail_metadata "resolved_run_missing_ena_metadata_${run}"
-    [[ $(tail -n +2 "$tmp/$run.tsv" | sed '/^[[:space:]]*$/d' | wc -l) -eq 1 ]] || fail_metadata "resolved_run_nonunique_ena_metadata_${run}"
-    [[ $(tail -n +2 "$tmp/$run.tsv" | cut -f1) == "$run" ]] || fail_metadata "resolved_run_accession_mismatch_${run}"
+    set +e; ena_report "$run" "$tmp/$run.tsv"; exact_rc=$?; set -e
+    [[ $exact_rc -eq 0 || $exact_rc -eq 22 ]] || exit "$exact_rc"
+    [[ $exact_rc -eq 0 ]] || fail_metadata "missing_exact_run_ena_metadata_${run}"
+    validate_exact_run_report "$tmp/$run.tsv" "$run" || fail_metadata "malformed_exact_run_ena_metadata_${run}"
     tail -n +2 "$tmp/$run.tsv" >>"$output"
 done <"$tmp/runs"
 
