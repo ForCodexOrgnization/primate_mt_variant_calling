@@ -240,6 +240,7 @@ process PREPARE_DECOY_REFERENCE {
     """
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "reference_fingerprint=${params.launcher_reference_fingerprint ?: 'unset'}" >/dev/null
 
     REF="${whole_ref}"
     BED="${numt_bed}"

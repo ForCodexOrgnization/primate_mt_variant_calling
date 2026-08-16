@@ -216,17 +216,40 @@ build_fingerprint() {
 
 fingerprint_tmp=$(mktemp "${NF_BASE_WORK_DIR}/.fingerprint.${SAMPLE_ID}.XXXXXX")
 if ! build_fingerprint "$fingerprint_tmp"; then FAILURE_CLASS=FINGERPRINT_GENERATION_FAILED; FAILURE_REASON="Fingerprint generation failed"; FAILURE_NONRETRYABLE=1; fi
-fingerprint_match=0; resume_mode=fresh
-if [[ -s "$fingerprint_tmp" && -f "${METADATA_DIR}/fingerprint.tsv" ]] && cmp -s "$fingerprint_tmp" "${METADATA_DIR}/fingerprint.tsv"; then fingerprint_match=1; resume_mode=resume
+fingerprint_match=0; resume_mode=resume
+previous_fingerprint="${METADATA_DIR}/fingerprint.tsv"
+fingerprint_keys=(sample_manifest_sha256 pipeline_config_sha256 pipeline_git_commit reference_fingerprint important_parameters_sha256)
+if [[ -s "$fingerprint_tmp" && -f "$previous_fingerprint" ]] && cmp -s "$fingerprint_tmp" "$previous_fingerprint"; then
+    fingerprint_match=1
+    log "INFO: previous sample provenance fingerprint matches current run"
 elif [[ -e "$SAMPLE_WORK_ROOT" ]]; then
-    stale="${NF_BASE_WORK_DIR}/${SAMPLE_ID}.stale.$(date -u +%Y%m%dT%H%M%SZ).$$"
-    mv -- "$SAMPLE_WORK_ROOT" "$stale"
-    log "Fingerprint changed; archived old cache at $stale"
+    if [[ -s "$previous_fingerprint" ]] && awk -F '\t' '$1=="combined_fingerprint" && NF==2 { found=1 } END { exit !found }' "$previous_fingerprint"; then
+        log "INFO: previous sample provenance fingerprint differs from current run"
+        for key in "${fingerprint_keys[@]}"; do
+            old_value=$(awk -F '\t' -v key="$key" '$1==key { print $2; exit }' "$previous_fingerprint")
+            new_value=$(awk -F '\t' -v key="$key" '$1==key { print $2; exit }' "$fingerprint_tmp")
+            [[ -n "$old_value" && "$old_value" == "$new_value" ]] && component_status=SAME || component_status=CHANGED
+            log "INFO: provenance_component ${key}: ${component_status}"
+        done
+    else
+        log "WARN: previous sample provenance fingerprint is missing, malformed, or incomplete"
+    fi
+    log "INFO: preserving canonical sample workspace and delegating cache validation to Nextflow -resume"
 fi
 mkdir -p "$METADATA_DIR" "$LOG_DIR" "$(dirname "$SAMPLE_TSV")" "$PRE_LAUNCH_DIR" "$NUMT_LAUNCH_DIR" "$ROUND1_LAUNCH_DIR" "$ROUND2_LAUNCH_DIR"
-[[ -s "$fingerprint_tmp" ]] && mv -f "$fingerprint_tmp" "${METADATA_DIR}/fingerprint.tsv" || rm -f "$fingerprint_tmp"
+if [[ -s "$fingerprint_tmp" ]]; then
+    if [[ -s "$previous_fingerprint" ]] && ! cmp -s "$fingerprint_tmp" "$previous_fingerprint"; then
+        history_dir="${METADATA_DIR}/fingerprint_history"
+        mkdir -p "$history_dir"
+        cp -p -- "$previous_fingerprint" "${history_dir}/fingerprint.$(date -u +%Y%m%dT%H%M%S).$$.tsv"
+    fi
+    mv -f "$fingerprint_tmp" "$previous_fingerprint"
+else
+    rm -f "$fingerprint_tmp"
+fi
 printf '%s\n' "$SAMPLE_LINE" >"$SAMPLE_TSV"
 COMBINED_FINGERPRINT=$(awk -F '\t' '$1=="combined_fingerprint"{print $2}' "${METADATA_DIR}/fingerprint.tsv" 2>/dev/null || true)
+REFERENCE_FINGERPRINT=$(awk -F '\t' '$1=="reference_fingerprint"{print $2}' "${METADATA_DIR}/fingerprint.tsv" 2>/dev/null || true)
 # Preserve queue age across later manager submissions; cleanup policy sorts by
 # this value rather than mutable directory mtimes or the most recent attempt.
 if [[ -s "${STATE_DIR}/${SAMPLE_ID}.failure.tsv" ]]; then
@@ -390,13 +413,13 @@ EOF
 run_sample_chain() {
     if (( FAILURE_NONRETRYABLE )); then FAILED_STAGE=setup; return 1; fi
     mkdir -p "$PRE_WORK_DIR" "$NUMT_WORK_DIR" "$ROUND1_WORK_DIR" "$ROUND2_WORK_DIR" "$NUMT_DISCOVERY_OUTROOT" "$NUMT_BESTHIT_OUTDIR"
-    if ! pre_complete; then run_stage pre "${LOG_DIR}/pre.log" nf "${REPO_DIR}/preprocessing.nf" "$PRE_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$PRE_OUTPUT_DIR" || return; fi
+    if ! pre_complete; then run_stage pre "${LOG_DIR}/pre.log" nf "${REPO_DIR}/preprocessing.nf" "$PRE_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$PRE_OUTPUT_DIR" --launcher_reference_fingerprint "$REFERENCE_FINGERPRINT" || return; fi
     pre_complete || { FAILED_STAGE=pre; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="CRAM/CRAI validation failed"; return 1; }; clean_stage "$PRE_WORK_DIR"
-    if ! numt_complete; then write_numt_config || return 1; run_stage numt "${LOG_DIR}/numt.log" nf "${REPO_DIR}/numt_detection/numt_end2end.nf" "$NUMT_WORK_DIR" --numt_config "$NUMT_CONFIG" || return; fi
+    if ! numt_complete; then write_numt_config || return 1; run_stage numt "${LOG_DIR}/numt.log" nf "${REPO_DIR}/numt_detection/numt_end2end.nf" "$NUMT_WORK_DIR" --numt_config "$NUMT_CONFIG" --launcher_reference_fingerprint "$REFERENCE_FINGERPRINT" || return; fi
     numt_complete || { FAILED_STAGE=numt; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="NUMT BED missing"; return 1; }; clean_stage "$NUMT_WORK_DIR"
-    if ! round1_complete; then run_stage round1 "${LOG_DIR}/round1.log" nf "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" "$ROUND1_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND1_OUTDIR" --cram_dirs "$PRE_OUTPUT_DIR" --numt_bed_dir "$NUMT_BESTHIT_OUTDIR" || return; fi
+    if ! round1_complete; then run_stage round1 "${LOG_DIR}/round1.log" nf "${REPO_DIR}/primate_pipeline_numt_decoy_round1.nf" "$ROUND1_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND1_OUTDIR" --cram_dirs "$PRE_OUTPUT_DIR" --numt_bed_dir "$NUMT_BESTHIT_OUTDIR" --launcher_reference_fingerprint "$REFERENCE_FINGERPRINT" || return; fi
     round1_complete || { FAILED_STAGE=round1; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Authoritative Round 1 outputs incomplete"; FAILURE_NONRETRYABLE=1; return 1; }; clean_stage "$ROUND1_WORK_DIR"
-    if ! round2_complete; then run_stage round2 "${LOG_DIR}/round2.log" nf "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" "$ROUND2_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND_OUTPUT_DIR" --round1_outdir "$ROUND1_OUTDIR" || return; fi
+    if ! round2_complete; then run_stage round2 "${LOG_DIR}/round2.log" nf "${REPO_DIR}/primate_pipeline_round2_consensus_NUMT.nf" "$ROUND2_WORK_DIR" --sample_tsv "$SAMPLE_TSV" --outdir "$ROUND_OUTPUT_DIR" --round1_outdir "$ROUND1_OUTDIR" --launcher_reference_fingerprint "$REFERENCE_FINGERPRINT" || return; fi
     # Do not clean round2 until the complete eight-part final validation succeeds.
     final_outputs_complete || { FAILED_STAGE=round2; FAILURE_CLASS=OUTPUT_INCOMPLETE; FAILURE_REASON="Final eight-part output validation failed"; return 1; }
 }
