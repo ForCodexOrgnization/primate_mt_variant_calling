@@ -522,6 +522,7 @@ process ALIGN_AND_SORT {
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
+    echo "reference_fingerprint=${params.launcher_reference_fingerprint ?: 'unset'}" >/dev/null
 
     cleanup_alignment_outputs() {
         echo "WARN: ALIGN_AND_SORT interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial BAM outputs." >&2
@@ -609,6 +610,7 @@ process ALIGN_LARGE_FASTQ_STREAMING_CHUNKS {
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
+    echo "reference_fingerprint=${params.launcher_reference_fingerprint ?: 'unset'}" >/dev/null
 
     cleanup_streaming_outputs() {
         echo "WARN: ALIGN_LARGE_FASTQ_STREAMING_CHUNKS interrupted or failed for ${meta.id}.${meta.pair_id}; removing partial outputs." >&2
@@ -1006,6 +1008,7 @@ process ALIGN_AND_SORT_CHUNK {
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
+    echo "reference_fingerprint=${params.launcher_reference_fingerprint ?: 'unset'}" >/dev/null
 
     cleanup_chunk_alignment_outputs() {
         echo "WARN: ALIGN_AND_SORT_CHUNK interrupted or failed for ${meta.id}.${meta.pair_id}.${meta.chunk_id}; removing partial BAM outputs." >&2
@@ -1184,6 +1187,7 @@ process BAM_TO_CRAM {
     """
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "reference_fingerprint=${params.launcher_reference_fingerprint ?: 'unset'}" >/dev/null
 
     # 1. 检查参考序列
     if [[ ! -f "${ref_file}" ]]; then

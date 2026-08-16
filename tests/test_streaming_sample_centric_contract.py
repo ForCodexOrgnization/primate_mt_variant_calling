@@ -14,8 +14,14 @@ assert 'case "$sample_real" in "$root_real"/*)' in SCRIPT
 for name in ("sample_manifest_sha256", "pipeline_config_sha256", "pipeline_git_commit",
              "reference_fingerprint", "important_parameters_sha256", "combined_fingerprint"):
     assert name in SCRIPT
-assert 'cmp -s "$fingerprint_tmp" "${METADATA_DIR}/fingerprint.tsv"' in SCRIPT
-assert '${SAMPLE_ID}.stale.$(date -u +%Y%m%dT%H%M%SZ).$$' in SCRIPT
+assert 'cmp -s "$fingerprint_tmp" "$previous_fingerprint"' in SCRIPT
+assert '${SAMPLE_ID}.stale.' not in SCRIPT
+assert 'preserving canonical sample workspace and delegating cache validation to Nextflow -resume' in SCRIPT
+assert 'fingerprint_history' in SCRIPT
+assert 'previous sample provenance fingerprint is missing, malformed, or incomplete' in SCRIPT
+for component in ("sample_manifest_sha256", "pipeline_config_sha256", "pipeline_git_commit",
+                  "reference_fingerprint", "important_parameters_sha256"):
+    assert component in SCRIPT and '${component_status}' in SCRIPT
 for line in ('INFO: sample_fingerprint_match=', 'INFO: resume_mode=', 'INFO: sample_work_root='):
     assert line in SCRIPT
 
@@ -32,6 +38,26 @@ for stage in ("pre", "numt", "round1", "round2"):
     assert f'run_stage {stage} "${{LOG_DIR}}/{stage}.log"' in SCRIPT
     assert f'clean_stage "$' + stage.upper() + '_WORK_DIR"' in SCRIPT
 assert '-resume -w "$2"' in SCRIPT
+assert 'resume_mode=resume' in SCRIPT
+
+# A commit-only, config-only, Round2-only, reference, or cancellation retry all
+# pass through this single provenance branch.  It can only retain the canonical
+# root and each fixed stage work directory; cache rotation/deletion is absent.
+provenance = SCRIPT[SCRIPT.index("fingerprint_match=0") : SCRIPT.index("current_slurm_element_id()")]
+assert 'mv -- "$SAMPLE_WORK_ROOT"' not in provenance
+assert 'rm -rf' not in provenance
+for fixed_root in ('/pre"', '/numt"', '/round1"', '/round2"'):
+    assert fixed_root in SCRIPT
+
+# References are external files whose contents can change in place.  The
+# launcher passes their bundle signature to every workflow so reference-using
+# task scripts include it in their Nextflow hashes.
+for workflow in ("preprocessing.nf", "numt_detection/numt_end2end.nf",
+                 "primate_pipeline_numt_decoy_round1.nf",
+                 "primate_pipeline_round2_consensus_NUMT.nf"):
+    text = (Path(__file__).resolve().parents[1] / workflow).read_text()
+    assert "launcher_reference_fingerprint" in text, workflow
+assert SCRIPT.count('--launcher_reference_fingerprint "$REFERENCE_FINGERPRINT"') == 4
 
 final_check = SCRIPT[SCRIPT.index("final_outputs_complete()") : SCRIPT.index("write_numt_config()")]
 for item in ("CRAM_PATH", "CRAI_PATH", "samtools quickcheck", "ROUND2_VCF",

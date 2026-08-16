@@ -58,8 +58,10 @@ process RUN_NUMT_END2END {
 
     script:
     def refSpecies = ref_species ?: real_species
+    def launcherReferenceFingerprint = params.launcher_reference_fingerprint ?: 'unset'
     """
     set -euo pipefail
+    echo "reference_fingerprint=${launcherReferenceFingerprint}" >/dev/null
 
     run_with_retry() {
       local cfg="\$1"

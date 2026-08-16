@@ -466,6 +466,7 @@ process BUILD_CONSENSUS_REFERENCE {
     """
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "reference_fingerprint=${params.launcher_reference_fingerprint ?: 'unset'}" >/dev/null
 
     MT_FASTA="${mt_fasta}"
     FILTER_EXPR='${filterExpr}'
