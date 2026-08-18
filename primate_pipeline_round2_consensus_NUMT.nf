@@ -1203,7 +1203,7 @@ PY_CHRM_FILTER
 process CALCULATE_ROUND2_MTCN {
     tag { "Calculate round2 mtCN for ${meta.id}" }
     label 'alignment_related'
-    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.round2.{mtcn.tsv,nuclear_regions.bed,nuclear_reference_validation.tsv,nuclear_coverage_qc.tsv,nuclear.regions.bed.gz,nuclear.mosdepth.region.dist.txt,nuclear.mosdepth.summary.txt}"
+    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.round2.{mtcn.tsv,nuclear_cov_method.tsv,nuclear_regions.bed,nuclear_reference_validation.tsv,nuclear_coverage_qc.tsv,nuclear.regions.bed.gz,nuclear.mosdepth.region.dist.txt,nuclear.mosdepth.summary.txt}"
 
     input:
     tuple val(meta), val(species_name), val(ref_name),
@@ -1221,6 +1221,7 @@ process CALCULATE_ROUND2_MTCN {
 
     output:
     tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.round2.mtcn.tsv"), emit: mtcn
+    path("${meta.id}.round2.nuclear_cov_method.tsv"), emit: nuclear_cov_method
     path("${meta.id}.round2.nuclear_regions.bed"), emit: nuclear_regions_bed
     path("${meta.id}.round2.nuclear_reference_validation.tsv"), emit: nuclear_reference_validation
     path("${meta.id}.round2.nuclear_coverage_qc.tsv"), emit: nuclear_coverage_qc
@@ -1264,7 +1265,7 @@ process CALCULATE_ROUND2_MTCN {
       --sample "\${SAMPLE_ID}" --species "${species_name}" --ref-name "${ref_name}" --mt-contig "${mt_contig}" \
       --regions "\${SAMPLE_ID}.round2.nuclear.regions.bed.gz" --distribution "\${SAMPLE_ID}.round2.nuclear.mosdepth.region.dist.txt" \
       --mt-depth "\${SAMPLE_ID}.round2.standard.chrM.depth.tsv" --qc "\${SAMPLE_ID}.round2.nuclear_coverage_qc.tsv" \
-      --output "\${SAMPLE_ID}.round2.mtcn.tsv"
+      --output "\${SAMPLE_ID}.round2.mtcn.tsv" --marker "\${SAMPLE_ID}.round2.nuclear_cov_method.tsv"
     """
 }
 

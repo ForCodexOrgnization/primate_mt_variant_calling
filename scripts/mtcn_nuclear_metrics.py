@@ -102,7 +102,8 @@ def summarize(args):
             weighted_depth += float(fields[-1]) * length
     if nuc_bases <= 0:
         raise SystemExit("ERROR: no nuclear coverage rows found in mosdepth output")
-    mt_depths = [float(line.rstrip().split("\t")[2]) for line in open(args.mt_depth) if line.strip()]
+    with open(args.mt_depth) as handle:
+        mt_depths = [float(line.rstrip().split("\t")[2]) for line in handle if line.strip()]
     if not mt_depths:
         raise SystemExit("ERROR: no mt positions found in round2 standard chrM BAM depth")
     dist = survival_distribution(args.distribution)
@@ -112,7 +113,8 @@ def summarize(args):
     mt_med = median(mt_depths)
     mtcn_mean = 2 * mt_mean / nuc_mean if nuc_mean > 0 else math.nan
     mtcn_med = 2 * mt_med / nuc_median if nuc_median > 0 else math.nan
-    qc = next(csv.DictReader(open(args.qc), delimiter="\t"))
+    with open(args.qc) as handle:
+        qc = next(csv.DictReader(handle, delimiter="\t"))
     extra_names = ["nuclear_q25", "nuclear_q75", "nuclear_zero_coverage_fraction", "nuclear_fraction_ge_10x", "nuclear_fraction_ge_20x", "nuclear_fraction_ge_30x", "nuclear_selected_contigs", "nuclear_selected_bp", "nuclear_total_non_mt_bp", "nuclear_selected_bp_fraction", "nuclear_min_contig_len_used"]
     header = "sample species ref_name mt_contig mt_coverage_source nuclear_coverage_source mean_mt_coverage mean_nuclear_coverage mean_mtCN mt_mean_coverage nuclear_mean_coverage mtcn_mean mean_formula mt_median_coverage nuclear_median_coverage mtcn_median median_formula".split() + extra_names
     extras = [quantile(dist, .75), quantile(dist, .25), 1-survival_at(dist, 1), survival_at(dist, 10), survival_at(dist, 20), survival_at(dist, 30), qc["nuclear_contigs"], qc["selected_nuclear_bp"], qc["total_non_mt_bp"], qc["selected_bp_fraction"], qc["nuclear_min_contig_len_used"]]
@@ -121,6 +123,14 @@ def summarize(args):
         out = csv.writer(handle, delimiter="\t", lineterminator="\n")
         out.writerow(header)
         out.writerow([f"{x:.6f}" if isinstance(x, float) else x for x in row])
+    # Write this per-sample completion marker last: its presence certifies that
+    # all full-region nuclear metrics above were calculated successfully.
+    marker_tmp = Path(str(args.marker) + ".tmp")
+    with marker_tmp.open("w", newline="") as handle:
+        out = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        out.writerow(["sample", "ref_name", "nuclear_cov_method", "nuclear_min_contig_len_used", "selected_bp_fraction", "nuclear_mean_coverage", "nuclear_median_coverage"])
+        out.writerow([args.sample, args.ref_name, "full_nuclear_regions_v1", qc["nuclear_min_contig_len_used"], qc["selected_bp_fraction"], f"{nuc_mean:.6f}", nuc_median])
+    marker_tmp.replace(args.marker)
 
 
 def main():
@@ -131,7 +141,7 @@ def main():
         p.add_argument("--" + flag, required=True)
     p.add_argument("--min-length", type=int, default=50000); p.add_argument("--target-fraction", type=float, default=.90); p.set_defaults(func=prepare)
     p = sub.add_parser("summarize")
-    for flag in ("sample", "species", "ref-name", "mt-contig", "regions", "distribution", "mt-depth", "qc", "output"):
+    for flag in ("sample", "species", "ref-name", "mt-contig", "regions", "distribution", "mt-depth", "qc", "output", "marker"):
         p.add_argument("--" + flag, required=True)
     p.set_defaults(func=summarize)
     args = parser.parse_args(); args.func(args)
