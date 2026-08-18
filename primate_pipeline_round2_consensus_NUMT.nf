@@ -45,12 +45,8 @@ params.round1_numt_vcf_subdir = params.round1_numt_vcf_subdir ?: 'numt_decoy_var
 // that GENERATE_CONSENSUS_NUMT_FASTA applies to original_numt.fa.
 params.round1_nuc_vcf_suffix = params.round1_nuc_vcf_suffix ?: '.numt_decoy.pass.split.vcf.gz'
 params.strict_numt_ref = params.strict_numt_ref ?: true
-params.mtcn_nuclear_window_size = params.mtcn_nuclear_window_size ?: 20000
-params.mtcn_nuclear_windows_per_contig = params.mtcn_nuclear_windows_per_contig ?: 3
 params.mtcn_nuclear_min_contig_len = params.mtcn_nuclear_min_contig_len ?: 50000
-params.mtcn_nuclear_edge_buffer = params.mtcn_nuclear_edge_buffer ?: 5000
-params.mtcn_nuclear_max_contigs = params.mtcn_nuclear_max_contigs ?: 500
-params.mtcn_mosdepth_no_per_base = params.mtcn_mosdepth_no_per_base ?: true
+params.mtcn_nuclear_target_fraction = params.mtcn_nuclear_target_fraction ?: 0.90
 params.round2_chrm_assignment_filter = (params.round2_chrm_assignment_filter ?: 1) as Integer
 if (!(params.round2_chrm_assignment_filter in [1, 2])) {
     error "Invalid --round2_chrm_assignment_filter=${params.round2_chrm_assignment_filter}; choose 1 (filter) or 2 (no filter)"
@@ -1207,7 +1203,7 @@ PY_CHRM_FILTER
 process CALCULATE_ROUND2_MTCN {
     tag { "Calculate round2 mtCN for ${meta.id}" }
     label 'alignment_related'
-    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.{round2.mtcn.tsv,round2.nuclear_windows.bed,round2.nuclear.regions.bed.gz,round2.nuclear.mosdepth.summary.txt}"
+    publishDir "${params.outdir}/${meta.id}/round_2/mtcn", mode: 'copy', pattern: "*.round2.{mtcn.tsv,nuclear_cov_method.tsv,nuclear_regions.bed,nuclear_reference_validation.tsv,nuclear_coverage_qc.tsv,nuclear.regions.bed.gz,nuclear.mosdepth.region.dist.txt,nuclear.mosdepth.summary.txt}"
 
     input:
     tuple val(meta), val(species_name), val(ref_name),
@@ -1225,13 +1221,18 @@ process CALCULATE_ROUND2_MTCN {
 
     output:
     tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.round2.mtcn.tsv"), emit: mtcn
-    path("${meta.id}.round2.nuclear_windows.bed"), emit: nuclear_windows_bed
+    path("${meta.id}.round2.nuclear_cov_method.tsv"), emit: nuclear_cov_method
+    path("${meta.id}.round2.nuclear_regions.bed"), emit: nuclear_regions_bed
+    path("${meta.id}.round2.nuclear_reference_validation.tsv"), emit: nuclear_reference_validation
+    path("${meta.id}.round2.nuclear_coverage_qc.tsv"), emit: nuclear_coverage_qc
     path("${meta.id}.round2.nuclear.regions.bed.gz"), emit: nuclear_regions
+    path("${meta.id}.round2.nuclear.mosdepth.region.dist.txt"), emit: nuclear_region_distribution
     path("${meta.id}.round2.nuclear.mosdepth.summary.txt"), emit: nuclear_mosdepth_summary
 
     script:
     def mt_contig = params.mt_contig ?: "chrM"
-    def whole_ref = "${params.global_ref_dir}/${ref_name}.fa"
+    def nuclearRefDir = params.mtcn_nuclear_ref_dir ?: params.global_ref_dir
+    def whole_ref = "${nuclearRefDir}/${ref_name}.fa"
     def configuredCramDirs = (params.cram_dirs instanceof List ? params.cram_dirs : params.cram_dirs.toString().split(','))*.trim().findAll { it }
     def cramDirs = (configuredCramDirs + [params.round1_outdir?.toString()]).findAll { it }.unique()
     def cramDirsBash = cramDirs.collect { '"' + it + '"' }.join(' ')
@@ -1239,201 +1240,32 @@ process CALCULATE_ROUND2_MTCN {
     """
     #!/usr/bin/env bash
     set -euo pipefail
-
     SAMPLE_ID="${meta.id}"
     REF="${whole_ref}"
-    MT_CONTIG="${mt_contig}"
-    MOSDEPTH_BIN="${mosdepthBin}"
     THREADS=${task.cpus ?: 4}
-
-    [[ -s "\${REF}" ]] || { echo "ERROR: Missing whole-genome reference: \${REF}" >&2; exit 1; }
-    [[ -s "\${REF}.fai" ]] || { echo "ERROR: Missing whole-genome reference index: \${REF}.fai" >&2; exit 1; }
-    command -v "\${MOSDEPTH_BIN}" >/dev/null 2>&1 || { echo "ERROR: mosdepth executable not found: \${MOSDEPTH_BIN}" >&2; exit 1; }
-
+    [[ -s "\${REF}" && -s "\${REF}.fai" ]] || { echo "ERROR: Missing selected CRAM-compatible nuclear reference or index: \${REF}" >&2; exit 1; }
+    command -v "${mosdepthBin}" >/dev/null || { echo "ERROR: mosdepth executable not found: ${mosdepthBin}" >&2; exit 1; }
     found_cram=""
-    found_crai=""
     for d in ${cramDirsBash}; do
-      cand_cram="\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram"
-      cand_crai="\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram.crai"
-      if [[ -s "\${cand_cram}" && -s "\${cand_crai}" ]]; then
-        found_cram="\${cand_cram}"
-        found_crai="\${cand_crai}"
-        break
+      if [[ -s "\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram" && -s "\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram.crai" ]]; then
+        found_cram="\${d}/\${SAMPLE_ID}/alignment/\${SAMPLE_ID}.cram"; break
       fi
     done
-    [[ -n "\${found_cram}" ]] || { echo "ERROR: CRAM/CRAI not found for \${SAMPLE_ID} in --cram_dirs or --round1_outdir" >&2; exit 1; }
-
-    python3 - <<'PY_BED'
-from pathlib import Path
-import math
-
-sample = "${meta.id}"
-ref_fai = Path("${whole_ref}.fai")
-mt = "${mt_contig}"
-
-window_cfg = int("${params.mtcn_nuclear_window_size}")
-windows_per_contig_cfg = int("${params.mtcn_nuclear_windows_per_contig}")
-min_len_cfg = int("${params.mtcn_nuclear_min_contig_len}")
-edge_cfg = int("${params.mtcn_nuclear_edge_buffer}")
-max_contigs_cfg = int("${params.mtcn_nuclear_max_contigs}")
-
-out = Path(f"{sample}.round2.nuclear_windows.bed")
-
-all_non_mt_contigs = []
-with ref_fai.open() as fh:
-    for line in fh:
-        fields = line.rstrip("\\n").split("\\t")
-        if len(fields) < 2:
-            continue
-        chrom = fields[0]
-        length = int(fields[1])
-        if chrom == mt:
-            continue
-        all_non_mt_contigs.append((chrom, length))
-
-eligible_contigs = [row for row in all_non_mt_contigs if row[1] >= min_len_cfg]
-selected_contigs = sorted(eligible_contigs, key=lambda row: row[1], reverse=True)[:max_contigs_cfg]
-
-def build_even_windows(contigs, configured_window, windows_per_contig, edge_fn, name_prefix):
-    rows = []
-    for chrom, length in contigs:
-        edge = edge_fn(length)
-        usable_start = edge
-        usable_end = length - edge
-        usable_len = usable_end - usable_start
-        if usable_len <= 0:
-            continue
-        local_window = min(configured_window, usable_len)
-        if local_window <= 0:
-            continue
-
-        if windows_per_contig <= 1:
-            starts = [(usable_start + usable_end - local_window) // 2]
-        else:
-            max_start = usable_end - local_window
-            starts = [
-                round(usable_start + i * (max_start - usable_start) / (windows_per_contig - 1))
-                for i in range(windows_per_contig)
-            ]
-
-        for idx, start in enumerate(starts, start=1):
-            start = max(0, min(int(start), length))
-            end = min(length, start + local_window)
-            if end > start:
-                rows.append((chrom, start, end, f"{name_prefix}_{idx}"))
-    return rows
-
-rows = build_even_windows(
-    selected_contigs,
-    window_cfg,
-    windows_per_contig_cfg,
-    lambda length: min(edge_cfg, length // 10),
-    "nuclear_window",
-)
-
-fallback_used = False
-if not rows:
-    fallback_used = True
-    fallback_contigs = sorted(all_non_mt_contigs, key=lambda row: row[1], reverse=True)[:100]
-    rows = build_even_windows(
-        fallback_contigs,
-        10000,
-        1,
-        lambda length: min(1000, length // 20),
-        "nuclear_fallback_window",
-    )
-    selected_contigs = fallback_contigs
-    print("[WARN] Primary nuclear window selection generated no windows; used centered fallback windows", flush=True)
-
-if not rows:
-    raise SystemExit("ERROR: no nuclear sampling windows generated")
-
-with out.open("w") as w:
-    for row in rows:
-        w.write("\\t".join(map(str, row)) + "\\n")
-
-total_sampled_bp = sum(end - start for _, start, end, _ in rows)
-selected_lengths = [length for _, length in selected_contigs]
-min_selected_len = min(selected_lengths) if selected_lengths else 0
-max_selected_len = max(selected_lengths) if selected_lengths else 0
-print(f"[INFO] Nuclear window diagnostics for {sample}", flush=True)
-print(f"[INFO] total_non_mt_contigs={len(all_non_mt_contigs)}", flush=True)
-print(f"[INFO] eligible_contigs_ge_min_len={len(eligible_contigs)}", flush=True)
-print(f"[INFO] selected_contigs={len(selected_contigs)}", flush=True)
-print(f"[INFO] generated_windows={len(rows)}", flush=True)
-print(f"[INFO] total_sampled_bp={total_sampled_bp}", flush=True)
-print(f"[INFO] fallback_used={fallback_used}", flush=True)
-print(f"[INFO] selected_contig_len_min={min_selected_len}", flush=True)
-print(f"[INFO] selected_contig_len_max={max_selected_len}", flush=True)
-print(f"[INFO] Wrote {len(rows)} nuclear sampling windows to {out}", flush=True)
-PY_BED
-    [[ -s "\${SAMPLE_ID}.round2.nuclear_windows.bed" ]] || { echo "ERROR: no nuclear sampling windows generated" >&2; exit 1; }
-
-    "\${MOSDEPTH_BIN}" \
-      --threads "\${THREADS}" \
-      --fasta "\${REF}" \
-      --no-per-base \
-      --by "\${SAMPLE_ID}.round2.nuclear_windows.bed" \
-      "\${SAMPLE_ID}.round2.nuclear" \
-      "\${found_cram}"
-
+    [[ -n "\${found_cram}" ]] || { echo "ERROR: CRAM/CRAI not found for \${SAMPLE_ID}" >&2; exit 1; }
+    samtools view -H "\${found_cram}" > "\${SAMPLE_ID}.round2.cram.header.sam"
+    python3 "${projectDir}/scripts/mtcn_nuclear_metrics.py" prepare \
+      --sample "\${SAMPLE_ID}" --ref-name "${ref_name}" --fai "\${REF}.fai" --mt-contig "${mt_contig}" \
+      --cram-header "\${SAMPLE_ID}.round2.cram.header.sam" --min-length "${params.mtcn_nuclear_min_contig_len}" \
+      --target-fraction "${params.mtcn_nuclear_target_fraction}" --bed "\${SAMPLE_ID}.round2.nuclear_regions.bed" \
+      --validation "\${SAMPLE_ID}.round2.nuclear_reference_validation.tsv" --qc "\${SAMPLE_ID}.round2.nuclear_coverage_qc.tsv"
+    "${mosdepthBin}" --threads "\${THREADS}" --fasta "\${REF}" --no-per-base \
+      --by "\${SAMPLE_ID}.round2.nuclear_regions.bed" "\${SAMPLE_ID}.round2.nuclear" "\${found_cram}"
     samtools depth -a ${std_bam} > "\${SAMPLE_ID}.round2.standard.chrM.depth.tsv"
-
-    python3 - <<'PY_MTCN'
-import gzip
-import math
-from pathlib import Path
-from statistics import median
-sample = "${meta.id}"
-nuc_regions = Path(f"{sample}.round2.nuclear.regions.bed.gz")
-mt_depth = Path(f"{sample}.round2.standard.chrM.depth.tsv")
-out = Path(f"{sample}.round2.mtcn.tsv")
-def weighted_median(values_and_weights):
-    total = sum(weight for _, weight in values_and_weights)
-    if total <= 0:
-        return math.nan
-    midpoint = total / 2.0
-    cumulative = 0.0
-    for value, weight in sorted(values_and_weights, key=lambda x: x[0]):
-        cumulative += weight
-        if cumulative >= midpoint:
-            return value
-    return values_and_weights[-1][0]
-
-nuc_bases = 0
-nuc_cov_bases = 0.0
-nuc_cov_weights = []
-with gzip.open(nuc_regions, "rt") as fh:
-    for line in fh:
-        if not line.strip() or line.startswith("#"):
-            continue
-        chrom, start, end, label, mean = line.rstrip("\\n").split("\\t")[:5]
-        length = int(end) - int(start)
-        cov = float(mean)
-        nuc_bases += length
-        nuc_cov_bases += cov * length
-        nuc_cov_weights.append((cov, length))
-mt_coverages = []
-with mt_depth.open() as fh:
-    for line in fh:
-        if not line.strip():
-            continue
-        fields = line.rstrip("\\n").split("\\t")
-        mt_coverages.append(float(fields[2]))
-if not mt_coverages:
-    raise SystemExit("ERROR: no mt positions found in round2 standard chrM BAM depth")
-if nuc_bases <= 0 or not nuc_cov_weights:
-    raise SystemExit("ERROR: no nuclear coverage rows found in mosdepth output")
-mt_mean_cov = sum(mt_coverages) / len(mt_coverages)
-mt_median_cov = median(mt_coverages)
-nuc_mean_cov = nuc_cov_bases / nuc_bases
-nuc_median_cov = weighted_median(nuc_cov_weights)
-mtcn_mean = (2.0 * mt_mean_cov / nuc_mean_cov) if nuc_mean_cov > 0 else math.nan
-mtcn_median = (2.0 * mt_median_cov / nuc_median_cov) if nuc_median_cov > 0 else math.nan
-with out.open("w") as fh:
-    fh.write("sample\\tspecies\\tref_name\\tmt_contig\\tmt_coverage_source\\tnuclear_coverage_source\\tmean_mt_coverage\\tmean_nuclear_coverage\\tmean_mtCN\\tmt_mean_coverage\\tnuclear_mean_coverage\\tmtcn_mean\\tmean_formula\\tmt_median_coverage\\tnuclear_median_coverage\\tmtcn_median\\tmedian_formula\\n")
-    fh.write(f"{sample}\\t${species_name}\\t${ref_name}\\t${mt_contig}\\tround2_standard_chrM_assigned_bam\\twgs_cram_mosdepth_sampled_nuclear_windows\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t{mt_mean_cov:.6f}\\t{nuc_mean_cov:.6f}\\t{mtcn_mean:.6f}\\t2*mt_mean_coverage/nuclear_mean_coverage\\t{mt_median_cov:.6f}\\t{nuc_median_cov:.6f}\\t{mtcn_median:.6f}\\t2*mt_median_coverage/nuclear_median_coverage\\n")
-PY_MTCN
+    python3 "${projectDir}/scripts/mtcn_nuclear_metrics.py" summarize \
+      --sample "\${SAMPLE_ID}" --species "${species_name}" --ref-name "${ref_name}" --mt-contig "${mt_contig}" \
+      --regions "\${SAMPLE_ID}.round2.nuclear.regions.bed.gz" --distribution "\${SAMPLE_ID}.round2.nuclear.mosdepth.region.dist.txt" \
+      --mt-depth "\${SAMPLE_ID}.round2.standard.chrM.depth.tsv" --qc "\${SAMPLE_ID}.round2.nuclear_coverage_qc.tsv" \
+      --output "\${SAMPLE_ID}.round2.mtcn.tsv" --marker "\${SAMPLE_ID}.round2.nuclear_cov_method.tsv"
     """
 }
 
