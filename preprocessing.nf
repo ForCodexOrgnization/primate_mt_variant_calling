@@ -196,46 +196,40 @@ ch_samples = ch_parsed_samples
 
 workflow {
 
-    // 第一步：下载 FASTQ 并生成配对清单
-    DOWNLOAD_FASTQ(ch_samples)
+    // Resolve the complete authoritative run set before any transfer starts.
+    RESOLVE_READ_RUNS(ch_samples)
 
-    // 第二步：解析下载生成的 fastq_pairs.tsv，展平为单对任务流
-    ch_fastq_pairs = DOWNLOAD_FASTQ.out.pairs_tsv
+    ch_resolved_runs = RESOLVE_READ_RUNS.out.manifest
         .splitCsv(header: true, sep: '\t')
         .map { row ->
             def meta = [
-                id      : row.sample_id,
-                pair_id : row.run_id,
-                layout  : row.layout,
-                n_pairs : row.expected_pairs.toInteger()
+                id               : row.sample_id,
+                pair_id          : row.run_id,
+                layout           : row.layout,
+                n_pairs          : row.expected_run_count.toInteger(),
+                expected_run_ids : row.expected_run_ids.tokenize(',').sort()
             ]
-            // 必须使用 file() 包装路径，Nextflow 才能在进程间正确传递文件
-            def reads = row.layout == 'PE' ? [ file(row.r1), file(row.r2) ] : [ file(row.r1) ]
-            tuple(meta, row.species_name, row.ref_name, reads)
+            tuple(meta, row.species_name, row.ref_name, row.r1_url, row.r2_url, row.r1_md5, row.r2_md5)
         }
 
-    // 第三步：根据 FASTQ 总大小路由到常规比对或分块比对
+    // Every invocation has exactly one run identity, giving successful runs an
+    // independent Nextflow cache entry across -resume.
+    DOWNLOAD_FASTQ_RUN(ch_resolved_runs)
+
+    ch_fastq_pairs = DOWNLOAD_FASTQ_RUN.out.reads
+
+    // Route each completed run immediately; other runs may still be downloading.
     ch_fastq_alignment_routes = ch_fastq_pairs
         .map { meta, species_name, ref_name, reads ->
             long total_fastq_bytes = reads.collect { it.size() }.sum() as long
             double total_fastq_size_gb = total_fastq_bytes / 1024.0 / 1024.0 / 1024.0
             boolean use_chunked = params.enable_chunked_alignment && total_fastq_size_gb >= (params.chunked_alignment_size_threshold_gb as double)
             String route_reason = !params.enable_chunked_alignment ? 'user_disabled' : (use_chunked ? 'above_threshold' : 'below_threshold')
-            def routed_meta = meta + [
-                total_fastq_size_gb: total_fastq_size_gb,
-                use_chunked_alignment: use_chunked
-            ]
-            log.info String.format(
-                "FASTQ sizing: sample=%s run=%s layout=%s total_fastq_size_gb=%.3f threshold_gb=%s chunked_enabled=%s route=%s reason=%s",
-                meta.id,
-                meta.pair_id,
-                meta.layout,
-                total_fastq_size_gb,
-                params.chunked_alignment_size_threshold_gb,
-                params.enable_chunked_alignment,
-                use_chunked ? 'chunked' : 'standard',
-                route_reason
-            )
+            def routed_meta = meta + [total_fastq_size_gb: total_fastq_size_gb, use_chunked_alignment: use_chunked]
+            log.info String.format("FASTQ sizing: sample=%s run=%s layout=%s total_fastq_size_gb=%.3f threshold_gb=%s chunked_enabled=%s route=%s reason=%s",
+                meta.id, meta.pair_id, meta.layout, total_fastq_size_gb,
+                params.chunked_alignment_size_threshold_gb, params.enable_chunked_alignment,
+                use_chunked ? 'chunked' : 'standard', route_reason)
             tuple(routed_meta, species_name, ref_name, reads)
         }
         .branch { meta, species_name, ref_name, reads ->
@@ -244,22 +238,15 @@ workflow {
         }
 
     ALIGN_AND_SORT(ch_fastq_alignment_routes.standard)
-
-    // Make each large-run chunk an independently cached Nextflow task. The old
-    // streaming process remains below only as a deprecated manual fallback.
     SPLIT_FASTQ_CHUNKS(ch_fastq_alignment_routes.chunked)
 
     ch_alignment_chunks = SPLIT_FASTQ_CHUNKS.out.chunks_tsv
         .splitCsv(header: true, sep: '\t')
         .map { row ->
-            def meta = [
-                id       : row.sample_id,
-                pair_id  : row.run_id,
-                layout   : row.layout,
-                chunk_id : row.chunk_id,
-                n_chunks : row.expected_chunks.toInteger(),
-                n_pairs  : row.expected_pairs.toInteger()
-            ]
+            def meta = [id: row.sample_id, pair_id: row.run_id, layout: row.layout,
+                chunk_id: row.chunk_id, n_chunks: row.expected_chunks.toInteger(),
+                n_pairs: row.expected_pairs.toInteger(),
+                expected_run_ids: row.expected_run_ids.tokenize(',').sort()]
             def reads = row.layout == 'PE' ? [file(row.r1), file(row.r2)] : [file(row.r1)]
             tuple(meta, row.species_name, row.ref_name, reads)
         }
@@ -268,45 +255,42 @@ workflow {
 
     ch_run_chunk_bams = ALIGN_AND_SORT_CHUNK.out.bam
         .map { meta, species_name, ref_name, bam, bai ->
-            tuple(groupKey([sample_id: meta.id, pair_id: meta.pair_id], meta.n_chunks),
-                  meta, species_name, ref_name, bam)
+            tuple(groupKey([sample_id: meta.id, pair_id: meta.pair_id], meta.n_chunks), meta, species_name, ref_name, bam)
         }
         .groupTuple()
         .map { run_key, metas, species_names, ref_names, bams ->
             def meta = metas[0]
-            if (bams.size() != meta.n_chunks) {
-                error "Missing chunk BAMs for ${meta.id}.${meta.pair_id}: expected ${meta.n_chunks}, received ${bams.size()}"
-            }
-            if (metas.any { it.n_chunks != meta.n_chunks || it.n_pairs != meta.n_pairs }) {
+            if (bams.size() != meta.n_chunks) error "Missing chunk BAMs for ${meta.id}.${meta.pair_id}: expected ${meta.n_chunks}, received ${bams.size()}"
+            if (metas.any { it.n_chunks != meta.n_chunks || it.n_pairs != meta.n_pairs || it.expected_run_ids != meta.expected_run_ids }) {
                 error "Inconsistent chunk metadata for ${meta.id}.${meta.pair_id}"
             }
             tuple(meta, species_names[0], ref_names[0], bams.sort { it.name })
         }
 
     MERGE_RUN_CHUNK_BAMS(ch_run_chunk_bams)
-
     ch_per_run_bams = ALIGN_AND_SORT.out.bam.mix(MERGE_RUN_CHUNK_BAMS.out.bam)
 
-    // 第四步：按 Sample ID 分组，并强制校验数量
+    // groupKey prevents an incomplete set from reaching MERGE_BAMS.  The
+    // identity checks additionally reject duplicated/substituted run BAMs.
     ch_bam_grouped = ch_per_run_bams
         .map { meta, species, ref_name, bam, bai ->
-            // groupKey 确保收齐 n_pairs 个文件后才下发到下游
             tuple(groupKey(meta.id, meta.n_pairs), meta, species, ref_name, bam)
         }
         .groupTuple()
         .map { gKey, metas, species_list, refs, bams ->
             def meta = metas[0]
-            // 严苛性检查：如果实际 BAM 数量不等于预期数量，报错终止
-            if (bams.size() != meta.n_pairs) {
-                error "CRITICAL: Sample ${meta.id} missing runs. Expected ${meta.n_pairs}, got ${bams.size()}."
+            def observed = metas.collect { it.pair_id }
+            def expected = meta.expected_run_ids.sort()
+            if (bams.size() != meta.n_pairs || observed.size() != observed.toSet().size() || observed.sort() != expected) {
+                error "CRITICAL: Sample ${meta.id} missing runs or has duplicate/unexpected runs. Expected ${expected}, observed ${observed.sort()} (expected count ${meta.n_pairs}, got ${bams.size()})."
+            }
+            if (metas.any { it.n_pairs != meta.n_pairs || it.expected_run_ids.sort() != expected }) {
+                error "CRITICAL: Sample ${meta.id} has inconsistent authoritative run manifests."
             }
             tuple(meta, species_list[0], refs[0], bams)
         }
 
-    // 第五步：合并样本的所有 BAM 文件
     MERGE_BAMS(ch_bam_grouped)
-
-    // 第六步：转为 CRAM 并发布结果
     BAM_TO_CRAM(MERGE_BAMS.out.merged_bam)
 }
 
@@ -316,189 +300,85 @@ workflow {
 ================================================================================
 */
 
-process DOWNLOAD_FASTQ {
+process RESOLVE_READ_RUNS {
     tag "${meta.id}"
     label 'down_task'
-    
-    // Retry transient failures; deterministic ENA metadata/layout failures exit 42 immediately.
-    errorStrategy { task.exitStatus == 42 ? 'terminate' : (task.attempt <= 2 ? 'retry' : 'ignore') }
+    errorStrategy { task.exitStatus == 42 ? 'terminate' : (task.attempt <= 2 ? 'retry' : 'terminate') }
     maxRetries 2
 
     input:
     tuple val(meta), val(species_name), val(ref_name)
 
     output:
-    path "fastq_pairs.tsv", emit: pairs_tsv
-    path "failed_download.tsv", emit: failed_tsv, optional: true
-    path "fastqs/*.fastq.gz", emit: fastq_files
+    path "run_manifest.tsv", emit: manifest
 
     script:
-    // 将你的 aria2c 路径定义为 Nextflow 变量
+    """
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    "${projectDir}/scripts/resolve_read_runs.sh" "${meta.id}" resolved_report.tsv
+    "${projectDir}/scripts/build_run_manifest.sh" "${meta.id}" "${species_name}" "${ref_name}" resolved_report.tsv run_manifest.tsv
+    """
+}
+
+process DOWNLOAD_FASTQ_RUN {
+    tag "${meta.id}.${meta.pair_id}"
+    label 'download_run_task'
+    // A permanently failed run terminates preprocessing; it can never be omitted
+    // from a partial sample CRAM.
+    errorStrategy { task.exitStatus == 42 ? 'terminate' : (task.attempt <= 2 ? 'retry' : 'terminate') }
+    maxRetries 2
+
+    input:
+    tuple val(meta), val(species_name), val(ref_name), val(r1_url), val(r2_url), val(r1_md5), val(r2_md5)
+
+    output:
+    tuple val(meta), val(species_name), val(ref_name), path("*.fastq.gz"), emit: reads
+
+    script:
     def aria2_bin = "/home/lt692/.conda/envs/aria2_env/bin/aria2c"
     def aria2_connections = params.aria2_connections as int
     def aria2_splits = params.aria2_splits as int
-    def aria2_fallback_connections = params.aria2_fallback_connections as int
-    def aria2_fallback_splits = params.aria2_fallback_splits as int
-    def aria2_fallback_retry_wait = params.aria2_fallback_retry_wait as int
-    def max_download_attempts = params.max_download_attempts as int
-    
+    def fallback_connections = params.aria2_fallback_connections as int
+    def fallback_splits = params.aria2_fallback_splits as int
+    def fallback_wait = params.aria2_fallback_retry_wait as int
+    def attempts = params.max_download_attempts as int
+    def r1_target = meta.layout == 'PE' ? "${meta.pair_id}_1.fastq.gz" : r1_url.tokenize('/').last()
+    def r2_target = "${meta.pair_id}_2.fastq.gz"
+    def second = meta.layout == 'PE' ? "download_and_verify '${r2_url}' '${r2_target}' '${r2_md5}'" : ':'
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
 
-    cleanup_download_outputs() {
-        echo "WARN: DOWNLOAD_FASTQ interrupted or failed for ${meta.id}; keeping downloaded FASTQ files for possible resume." >&2
-        rm -f report.tsv fastq_pairs.tsv failed_download.tsv
+    download_and_verify() {
+        local url=\$1 target=\$2 expected_md5=\$3
+        [[ -n "\$expected_md5" && "\$expected_md5" != . ]] || { echo "ERROR: Missing MD5 for \$target" >&2; exit 42; }
+        if [[ -s "\$target" ]] && gzip -t "\$target" && echo "\$expected_md5  \$target" | md5sum -c -; then
+            rm -f "\$target.aria2"; return 0
+        fi
+        rm -f "\$target" "\$target.aria2"
+        local log="\$target.aria2.log" attempt=1
+        while (( attempt <= ${attempts} )); do
+            if ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 --file-allocation=none --summary-interval=0 -d . -o "\$target" "\$url" >"\$log" 2>&1; then
+                :
+            elif grep -Eq 'status=403|status=429|errorCode=22' "\$log"; then
+                if ! ${aria2_bin} -x ${fallback_connections} -s ${fallback_splits} -c -m 5 --retry-wait=${fallback_wait} --timeout=120 --connect-timeout=60 --file-allocation=none --summary-interval=0 -d . -o "\$target" "\$url" >>"\$log" 2>&1; then
+                    rm -f "\$target" "\$target.aria2"; ((attempt++)); continue
+                fi
+            else
+                rm -f "\$target" "\$target.aria2"; ((attempt++)); continue
+            fi
+            if gzip -t "\$target" && echo "\$expected_md5  \$target" | md5sum -c -; then
+                rm -f "\$target.aria2"; return 0
+            fi
+            rm -f "\$target" "\$target.aria2"; ((attempt++))
+        done
+        echo "ERROR: ${meta.id}.${meta.pair_id} \$target failed download/validation after ${attempts} attempts" >&2
+        return 1
     }
 
-    trap cleanup_download_outputs INT TERM HUP QUIT ERR
-
-    mkdir -p fastqs
-
-    # Do not remove fastqs here. Keep completed or partial downloads so aria2c -c can resume.
-    rm -f report.tsv fastq_pairs.tsv failed_download.tsv
-    acc="${meta.id}"
-    # Resolve direct ENA records, aliases, and (last) NCBI SRA metadata.  FASTQ
-    # transfer remains ENA/aria2 and all downstream classification is unchanged.
-    "${projectDir}/scripts/resolve_read_runs.sh" "\${acc}" report.tsv
-
-    # 2. 准备输出清单
-    rm -f fastq_pairs.tmp
-
-    record_failed_download() {
-        local failed_run_id="\$1"
-        local failed_fastq="\$2"
-        local reason="\$3"
-        if [[ ! -f failed_download.tsv ]]; then
-            echo -e "sample_id\trun_id\tfastq_file\treason" > failed_download.tsv
-        fi
-        echo -e "${meta.id}\t\${failed_run_id}\t\${failed_fastq}\t\${reason}" >> failed_download.tsv
-    }
-
-    # 3. Classify filenames first; the helper preserves each URL/MD5 index pair.
-    source "${projectDir}/scripts/classify_ena_fastq.sh"
-    tail -n +2 report.tsv | while IFS=\$'\t' read -r run_id library_layout ftp_urls md5s; do
-        if ! classify_ena_fastq "\$run_id" "\$library_layout" "\$ftp_urls" "\$md5s"; then
-            # Classifier failures are deterministic metadata/layout errors.
-            exit 42
-        fi
-        layout=\$FASTQ_LAYOUT
-        echo "INFO: run=\$run_id metadata_layout=\$library_layout detected_layout=\$FASTQ_DETECTED_LAYOUT alignment_layout=\$layout"
-
-        download_and_verify_fastq() {
-            local url="\$1"
-            local target="\$2"
-            local expected_md5="\$3"
-            local run_id="\$4"
-            local fastq_file
-            fastq_file=\$(basename "\$target")
-
-            if [[ -z "\$expected_md5" ]]; then
-                echo "ERROR: Missing MD5 checksum for \$target in ENA report." >&2
-                rm -f "\$target" "\$target.aria2"
-                record_failed_download "\$run_id" "\$fastq_file" "MISSING_MD5"
-                return 1
-            fi
-
-            if [[ -s "\$target" ]]; then
-                echo "INFO: Existing FASTQ found for \$target; checking gzip and MD5..."
-                if gzip -t "\$target" && echo "\$expected_md5  \$target" | md5sum -c -; then
-                    echo "INFO: Existing FASTQ passed gzip and MD5; skipping download for \$target."
-                    rm -f "\$target.aria2"
-                    return 0
-                else
-                    echo "WARN: Existing FASTQ failed gzip or MD5 validation; removing and re-downloading \$target." >&2
-                    rm -f "\$target" "\$target.aria2"
-                fi
-            fi
-
-            local aria2_log="\${target}.aria2.log"
-            local attempt=1
-            while (( attempt <= ${max_download_attempts} )); do
-                echo "INFO: Normal aria2c attempt \$attempt/${max_download_attempts} for \$target with -x ${aria2_connections} -s ${aria2_splits}. Log: \$aria2_log"
-                if ${aria2_bin} -x ${aria2_connections} -s ${aria2_splits} -c -m 5 --retry-wait 10 \
-                    --file-allocation=none \
-                    --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url" >"\$aria2_log" 2>&1; then
-                    echo "INFO: Normal aria2c attempt completed for \$target; validating gzip and MD5."
-                elif grep -Eq 'status=403|status=429|errorCode=22' "\$aria2_log"; then
-                    echo "WARN: Normal aria2c attempt for \$target hit HTTP 403/429 or aria2 errorCode=22; retrying in fallback single-connection mode. See \$aria2_log" >&2
-                    if ${aria2_bin} -x ${aria2_fallback_connections} -s ${aria2_fallback_splits} -c -m 5 \
-                        --retry-wait=${aria2_fallback_retry_wait} \
-                        --timeout=120 \
-                        --connect-timeout=60 \
-                        --file-allocation=none \
-                        --summary-interval=0 -d fastqs -o "\$fastq_file" "\$url" >>"\$aria2_log" 2>&1; then
-                        echo "INFO: Fallback aria2c single-connection mode completed for \$target; validating gzip and MD5."
-                    else
-                        echo "WARN: Fallback aria2c single-connection mode failed for \$target. See \$aria2_log" >&2
-                        rm -f "\$target" "\$target.aria2"
-                        ((attempt++))
-                        continue
-                    fi
-                else
-                    echo "WARN: Normal aria2c attempt failed for \$target without a fallback-triggering status. See \$aria2_log" >&2
-                    rm -f "\$target" "\$target.aria2"
-                    ((attempt++))
-                    continue
-                fi
-
-                if ! gzip -t "\$target"; then
-                    echo "WARN: Final gzip status for \$target: FAILED. Removing corrupted file before retry." >&2
-                    rm -f "\$target" "\$target.aria2"
-                    ((attempt++))
-                    continue
-                fi
-                echo "INFO: Final gzip status for \$target: PASSED."
-
-                if ! echo "\$expected_md5  \$target" | md5sum -c -; then
-                    echo "WARN: Final MD5 status for \$target: FAILED. Removing corrupted file before retry." >&2
-                    rm -f "\$target" "\$target.aria2"
-                    ((attempt++))
-                    continue
-                fi
-
-                echo "INFO: Final MD5 status for \$target: PASSED."
-                echo "INFO: gzip and MD5 checks passed for \$target."
-                rm -f "\$target.aria2"
-                return 0
-            done
-
-            echo "ERROR: \$target failed download and/or validation after ${max_download_attempts} download attempts. See \$aria2_log" >&2
-            rm -f "\$target" "\$target.aria2"
-            record_failed_download "\$run_id" "\$fastq_file" "DOWNLOAD_OR_VALIDATION_FAILED_AFTER_RETRIES"
-            return 1
-        }
-
-        # Download only classifier-selected inputs; orphan FASTQs are intentionally ignored.
-        if [[ "\$layout" == "PE" ]]; then
-            if ! download_and_verify_fastq "https://\$FASTQ_R1_URL" "fastqs/\${run_id}_1.fastq.gz" "\$FASTQ_R1_MD5" "\$run_id"; then
-                echo "ERROR: Download/validation failed for run \$run_id R1; failing this sample so Nextflow can retry or ignore it." >&2; exit 1
-            fi
-            if ! download_and_verify_fastq "https://\$FASTQ_R2_URL" "fastqs/\${run_id}_2.fastq.gz" "\$FASTQ_R2_MD5" "\$run_id"; then
-                echo "ERROR: Download/validation failed for run \$run_id R2; failing this sample so Nextflow can retry or ignore it." >&2; exit 1
-            fi
-            echo -e "${meta.id}\t${species_name}\t${ref_name}\t\$run_id\tPE\t\$PWD/fastqs/\${run_id}_1.fastq.gz\t\$PWD/fastqs/\${run_id}_2.fastq.gz\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
-        else
-            target="fastqs/\$(basename "\$FASTQ_R1_URL")"
-            if ! download_and_verify_fastq "https://\$FASTQ_R1_URL" "\$target" "\$FASTQ_R1_MD5" "\$run_id"; then
-                echo "ERROR: Download/validation failed for run \$run_id SE; failing this sample so Nextflow can retry or ignore it." >&2; exit 1
-            fi
-            echo -e "${meta.id}\t${species_name}\t${ref_name}\t\$run_id\tSE\t\$PWD/\$target\t.\tPLACEHOLDER_EXPECTED_RUNS" >> fastq_pairs.tmp
-        fi
-    done
-
-    retained_count=\$(wc -l < fastq_pairs.tmp | awk '{print \$1}')
-
-    if [[ "\$retained_count" -eq 0 ]]; then
-        echo "ERROR: No usable FASTQ runs found for \${acc}." >&2
-        exit 1
-    fi
-
-    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tlayout\\tr1\\tr2\\texpected_pairs" > fastq_pairs.tsv
-    awk -v n="\$retained_count" 'BEGIN{FS=OFS="\t"} { \$8=n; print }' fastq_pairs.tmp >> fastq_pairs.tsv
-    rm -f fastq_pairs.tmp
-
-    trap - INT TERM HUP QUIT ERR
+    download_and_verify '${r1_url}' '${r1_target}' '${r1_md5}'
+    ${second}
     """
 }
 
@@ -978,12 +858,12 @@ process SPLIT_FASTQ_CHUNKS {
     echo "INFO: Number of chunks: \${expected_chunks}"
     echo "INFO: Chunk IDs: \$(paste -sd, chunk_ids.txt)"
 
-    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tlayout\\tchunk_id\\tr1\\tr2\\texpected_chunks\\texpected_pairs" > chunks.tsv
+    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tlayout\\tchunk_id\\tr1\\tr2\\texpected_chunks\\texpected_pairs\\texpected_run_ids" > chunks.tsv
     while read -r chunk_id; do
         if [[ "${meta.layout}" == "PE" ]]; then
-            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}_R1.fastq.gz\\t\$PWD/chunks/\${chunk_id}_R2.fastq.gz\\t\${expected_chunks}\\t${meta.n_pairs}" >> chunks.tsv
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}_R1.fastq.gz\\t\$PWD/chunks/\${chunk_id}_R2.fastq.gz\\t\${expected_chunks}\\t${meta.n_pairs}\\t${meta.expected_run_ids.join(',')}" >> chunks.tsv
         else
-            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}.fastq.gz\\t.\\t\${expected_chunks}\\t${meta.n_pairs}" >> chunks.tsv
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}.fastq.gz\\t.\\t\${expected_chunks}\\t${meta.n_pairs}\\t${meta.expected_run_ids.join(',')}" >> chunks.tsv
         fi
     done < chunk_ids.txt
 
