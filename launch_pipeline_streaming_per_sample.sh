@@ -32,7 +32,16 @@ IMMEDIATE_RETRY_DELAY_SECONDS="${IMMEDIATE_RETRY_DELAY_SECONDS:-60}"
 NEXTFLOW_MODULE="${NEXTFLOW_MODULE:-}"
 SAMTOOLS_MODULE="${SAMTOOLS_MODULE:-}"
 STREAM_SMOKE_TEST="${STREAM_SMOKE_TEST:-0}"
+STREAMING_SUBMIT_HELD="${STREAMING_SUBMIT_HELD:-0}"
 PIPELINE_REPO_DIR="${PIPELINE_REPO_DIR:-}"
+
+case "$STREAMING_SUBMIT_HELD" in
+    0|1) ;;
+    *)
+        echo "ERROR: STREAMING_SUBMIT_HELD must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
 
 ACTIVE_STAGE=""
 ACTIVE_CHILD_PID=""
@@ -130,6 +139,9 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     fi
     export NORMALIZED_SAMPLE_LIST
     sbatch_args=(--export=ALL "--array=1-${NUM_SAMPLES}%${MAX_CONCURRENT}")
+    if [[ "$STREAMING_SUBMIT_HELD" == 1 ]]; then
+        sbatch_args+=(--hold)
+    fi
     [[ -z "${STREAM_PARTITION}" ]] || sbatch_args+=(--partition="${STREAM_PARTITION}")
     log "Submitting ${NUM_SAMPLES} sample workers from immutable manifest ${NORMALIZED_SAMPLE_LIST}"
     if ! submission=$(sbatch "${sbatch_args[@]}" "$0"); then
