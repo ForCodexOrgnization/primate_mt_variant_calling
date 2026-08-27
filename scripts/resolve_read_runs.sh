@@ -42,7 +42,7 @@ normalize_discovery_report() {
             sub(/\r$/, "", $NF)
             if (NF == 4 && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "") print
         }
-    ' "$report" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 | awk -F '\t' '!seen[$1]++' >"$normalized.rows"
+    ' "$report" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -k3,3 -k4,4 >"$normalized.rows"
     if [[ ! -s "$normalized.rows" ]]; then
         printf 'WARN: ENA %s discovery returned no usable exact-run rows; continuing fallback resolution\n' "$context" >&2
         return 1
@@ -71,7 +71,9 @@ ena_report() {
 }
 write_normalized() {
     local source=$1
-    { printf '%s\n' "$header"; tail -n +2 "$source" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 | awk -F '\t' '!seen[$1]++'; } >"$output"
+    # Preserve duplicates for build_run_manifest.sh, which safely deduplicates
+    # identical records and hard-fails conflicting records for one run ID.
+    { printf '%s\n' "$header"; tail -n +2 "$source" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -k3,3 -k4,4; } >"$output"
 }
 
 # A transport failure is transient (non-42).  A valid header with no rows is a

@@ -3,6 +3,8 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bash "$repo/tests/test_fastq_classification.sh"
 bash "$repo/tests/test_read_run_resolver.sh"
+bash "$repo/tests/test_run_manifest.sh"
+python3 "$repo/tests/test_preprocessing_run_cache_contract.py"
 bash "$repo/tests/test_round1_completion.sh"
 python3 "$repo/tests/test_streaming_sample_centric_contract.py"
 python3 "$repo/tests/test_round_contract_source.py"
