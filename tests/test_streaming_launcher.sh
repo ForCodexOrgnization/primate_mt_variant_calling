@@ -43,6 +43,31 @@ grep -F 'INFO: nextflow_version=nextflow test-version' <<<"$output" >/dev/null
 grep -Fx "$repo" "$tmp/sbatch.args.repo" >/dev/null
 grep -F "INFO: pipeline_repo_dir=$repo" <<<"$output" >/dev/null
 
+# The run-manager can request an initially held array without replacing the
+# existing per-array concurrency throttle.
+output=$(run_coordinator STREAMING_SUBMIT_HELD=1 MAX_CONCURRENT=7 2>&1)
+grep -F -- '--array=1-1%7' "$tmp/sbatch.args" >/dev/null
+grep -F -- '--hold' "$tmp/sbatch.args" >/dev/null
+
+output=$(run_coordinator STREAMING_SUBMIT_HELD=0 2>&1)
+grep -F -- '--array=1-1%10' "$tmp/sbatch.args" >/dev/null
+if grep -F -- '--hold' "$tmp/sbatch.args" >/dev/null; then
+    echo 'normal streaming submission unexpectedly held' >&2; exit 1
+fi
+
+output=$(run_coordinator 2>&1)
+grep -F -- '--array=1-1%10' "$tmp/sbatch.args" >/dev/null
+if grep -F -- '--hold' "$tmp/sbatch.args" >/dev/null; then
+    echo 'default streaming submission unexpectedly held' >&2; exit 1
+fi
+
+rm -f "$tmp/sbatch.args" "$tmp/sbatch.args.repo"
+if run_coordinator STREAMING_SUBMIT_HELD=abc >"$tmp/invalid-held.out" 2>&1; then
+    echo 'invalid STREAMING_SUBMIT_HELD unexpectedly succeeded' >&2; exit 1
+fi
+grep -F 'ERROR: STREAMING_SUBMIT_HELD must be 0 or 1' "$tmp/invalid-held.out" >/dev/null
+[[ ! -e "$tmp/sbatch.args" ]] || { echo 'invalid STREAMING_SUBMIT_HELD invoked sbatch' >&2; exit 1; }
+
 # A copied Slurm script must use the explicitly exported repository, while a
 # spool copy without that stable value must fail before any submission.
 spool_dir="/var/spool/slurmd/job-test-$$"
