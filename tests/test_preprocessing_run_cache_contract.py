@@ -33,6 +33,32 @@ assert "ALIGN_AND_SORT(ch_fastq_alignment_routes.standard)" in source
 assert "SPLIT_FASTQ_CHUNKS(ch_fastq_alignment_routes.chunked)" in source
 assert "MERGE_RUN_CHUNK_BAMS(ch_run_chunk_bams)" in source
 
+# Nextflow may unwrap a one-file path output to a scalar Path. A Path is itself
+# Iterable over components, so normalize it before sizing and preserve the
+# normalized list on both the standard and chunked branch outputs.
+routing = source.split("ch_fastq_alignment_routes = ch_fastq_pairs", 1)[1].split(
+    "ALIGN_AND_SORT(ch_fastq_alignment_routes.standard)", 1
+)[0]
+assert "(reads instanceof Collection) ? reads.toList() : [reads]" in routing
+assert "read_files.collect { it.size() }" in routing
+assert "reads.collect { it.size() }" not in routing
+assert "tuple(routed_meta, species_name, ref_name, read_files)" in routing
+
+# Behavioral route matrix: scalar SE becomes one input while PE remains two;
+# threshold routing never changes the normalized cardinality passed onward.
+def normalize(reads):
+    return list(reads) if isinstance(reads, list) else [reads]
+
+
+for reads, expected_count in [("SINGLE.fastq.gz", 1), (["R1.fastq.gz", "R2.fastq.gz"], 2)]:
+    normalized = normalize(reads)
+    assert len(normalized) == expected_count
+    assert normalized[0] == (reads[0] if isinstance(reads, list) else reads)
+    for above_chunk_threshold in (False, True):
+        routed_to = "chunked" if above_chunk_threshold else "standard"
+        route_payload = (routed_to, normalized)
+        assert len(route_payload[1]) == expected_count
+
 # Fan-out is explicit, conservative, and independently configurable on both sites.
 for text in (config, mcc):
     assert "download_run_max_forks = 2" in text
