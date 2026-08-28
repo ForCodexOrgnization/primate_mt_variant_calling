@@ -15,6 +15,14 @@ params.existing_cram_quickcheck_retries = params.existing_cram_quickcheck_retrie
 params.existing_cram_quickcheck_delay_seconds = params.existing_cram_quickcheck_delay_seconds ?: 0
 params.existing_cram_quickcheck_timeout_seconds = params.existing_cram_quickcheck_timeout_seconds ?: 120
 def paramAsBoolean = { value -> value instanceof Boolean ? value : value?.toString()?.toBoolean() }
+def samPlatformForEna = { value ->
+    switch (value?.toString()) {
+        case 'ILLUMINA': return 'ILLUMINA'
+        case 'DNBSEQ':
+        case 'BGISEQ': return 'DNBSEQ'
+        default: error "Unsupported ENA instrument_platform in authoritative run manifest: ${value}"
+    }
+}
 
 if (!params.containsKey('enable_chunked_alignment') || params.enable_chunked_alignment == null) {
     params.enable_chunked_alignment = true
@@ -202,12 +210,16 @@ workflow {
     ch_resolved_runs = RESOLVE_READ_RUNS.out.manifest
         .splitCsv(header: true, sep: '\t')
         .map { row ->
+            if (row.layout != 'PE') {
+                error "Authoritative run manifest invariant violated for ${row.sample_id}/${row.run_id}: expected PE, found ${row.layout}"
+            }
             def meta = [
                 id               : row.sample_id,
                 pair_id          : row.run_id,
                 layout           : row.layout,
                 instrument_platform : row.instrument_platform,
                 instrument_model : row.instrument_model,
+                sam_platform     : samPlatformForEna(row.instrument_platform),
                 n_pairs          : row.expected_run_count.toInteger(),
                 expected_run_ids : row.expected_run_ids.tokenize(',').sort()
             ]
@@ -249,9 +261,12 @@ workflow {
     ch_alignment_chunks = SPLIT_FASTQ_CHUNKS.out.chunks_tsv
         .splitCsv(header: true, sep: '\t')
         .map { row ->
+            if (row.layout != 'PE') {
+                error "Chunk manifest invariant violated for ${row.sample_id}/${row.run_id}: expected PE, found ${row.layout}"
+            }
             def meta = [id: row.sample_id, pair_id: row.run_id, layout: row.layout,
                 instrument_platform: row.instrument_platform, instrument_model: row.instrument_model,
-                chunk_id: row.chunk_id, n_chunks: row.expected_chunks.toInteger(),
+                sam_platform: samPlatformForEna(row.instrument_platform), chunk_id: row.chunk_id, n_chunks: row.expected_chunks.toInteger(),
                 n_pairs: row.expected_pairs.toInteger(),
                 expected_run_ids: row.expected_run_ids.tokenize(',').sort()]
             def reads = row.layout == 'PE' ? [file(row.r1), file(row.r2)] : [file(row.r1)]
@@ -464,7 +479,7 @@ process ALIGN_AND_SORT {
 
     # ===== 执行核心管道 =====
     bwa mem -K 100000000 -v 3 -t ${task.cpus} -M -Y \\
-      -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
+      -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:${meta.sam_platform}\\tLB:${meta.id}" \\
       "${ref_file}" ${bwa_inputs} | \\
     samtools sort -@ ${params.align_sort_threads} -m ${params.align_sort_mem_per_thread} \\
       -T "\${TMP_DIR}/sort_prefix" \\
@@ -624,7 +639,7 @@ def align_chunk(chunk_id, r1_gz, r2_gz=None):
         "@RG"
         + escaped_tab + "ID:" + sample_id + "." + pair_id
         + escaped_tab + "SM:" + sample_id
-        + escaped_tab + "PL:ILLUMINA"
+        + escaped_tab + "PL:${meta.sam_platform}"
         + escaped_tab + "LB:" + sample_id
     )
     if literal_tab in rg:
@@ -936,7 +951,7 @@ process ALIGN_AND_SORT_CHUNK {
     mkdir -p "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}"
 
     bwa mem -K 100000000 -v 3 -t ${task.cpus} -M -Y \\
-      -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
+      -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:${meta.sam_platform}\\tLB:${meta.id}" \\
       "${ref_file}" ${bwa_inputs} | \\
     samtools sort -@ ${params.align_sort_threads} -m ${params.align_sort_mem_per_thread} \\
       -T "tmp_sort_${meta.id}_${meta.pair_id}_${meta.chunk_id}/sort_prefix" \\
