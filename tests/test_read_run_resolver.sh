@@ -15,13 +15,13 @@ for ((i=0; i<${#args[@]}; i++)); do
     accession=*) accession=${args[i]#accession=};;
   esac
 done
-header=$'run_accession\tlibrary_layout\tfastq_ftp\tfastq_md5'
+header=$'run_accession\tlibrary_layout\tfastq_ftp\tfastq_md5\tinstrument_platform\tinstrument_model'
 emit_run() {
   case $1 in
-    SRR1746970) printf '%s\nSRR1746970\tPAIRED\th/SRR1746970_1.fastq.gz;h/SRR1746970_2.fastq.gz\tm1;m2\n' "$header";;
-    SRR1746971) printf '%s\nSRR1746971\tPAIRED\th/SRR1746971.fastq.gz;h/SRR1746971_1.fastq.gz;h/SRR1746971_2.fastq.gz\tmo;m1;m2\n' "$header";;
-    SRR1) printf '%s\nSRR1\tPAIRED\th/SRR1_1.fastq.gz;h/SRR1_2.fastq.gz\ta;b\n' "$header";;
-    SRR999999) printf '%s\nSRR999999\tPAIRED\th/SRR999999_1.fastq.gz;h/SRR999999_2.fastq.gz\t\n' "$header";;
+    SRR1746970) printf '%s\nSRR1746970\tPAIRED\th/SRR1746970_1.fastq.gz;h/SRR1746970_2.fastq.gz\tm1;m2\tILLUMINA\tHiSeq 2000\n' "$header";;
+    SRR1746971) printf '%s\nSRR1746971\tPAIRED\th/SRR1746971.fastq.gz;h/SRR1746971_1.fastq.gz;h/SRR1746971_2.fastq.gz\tmo;m1;m2\tILLUMINA\tHiSeq 2000\n' "$header";;
+    SRR1) printf '%s\nSRR1\tPAIRED\th/SRR1_1.fastq.gz;h/SRR1_2.fastq.gz\ta;b\tILLUMINA\tNovaSeq 6000\n' "$header";;
+    SRR999999) printf '%s\nSRR999999\tPAIRED\th/SRR999999_1.fastq.gz;h/SRR999999_2.fastq.gz\t\tILLUMINA\tHiSeq\n' "$header";;
   esac
 }
 case $url in
@@ -29,12 +29,12 @@ case $url in
     if [[ ${MODE:-fallback} == direct_run && $accession == SRR1 ]]; then emit_run SRR1 >"$out"
     elif [[ ${MODE:-fallback} == direct_sample && $accession == ERS1 ]]; then emit_run SRR1 >"$out"
     elif [[ ${MODE:-fallback} == mixed_discovery && $accession == ERS_MIXED ]]; then
-      { emit_run SRR1; printf '\tPAIRED\th/partial.fastq.gz\t\n'; } >"$out"
-    elif [[ ${MODE:-fallback} =~ ^incomplete_ && $accession == ERS14600391 ]]; then printf '%s\n\tPAIRED\t\t\n' "$header" >"$out"
+      { emit_run SRR1; printf '\tPAIRED\th/partial.fastq.gz\t\tILLUMINA\tHiSeq\n'; } >"$out"
+    elif [[ ${MODE:-fallback} =~ ^incomplete_ && $accession == ERS14600391 ]]; then printf '%s\n\tPAIRED\t\t\tILLUMINA\tHiSeq\n' "$header" >"$out"
     elif [[ $accession =~ ^SRR ]]; then emit_run "$accession" >"$out"
     else printf '%s\n' "$header" >"$out"; fi;;
   */search)
-    if [[ ${MODE:-fallback} =~ ^incomplete_ ]]; then printf '%s\nNOT_A_RUN\t\th/partial.fastq.gz\t\n' "$header" >"$out"
+    if [[ ${MODE:-fallback} =~ ^incomplete_ ]]; then printf '%s\nNOT_A_RUN\t\th/partial.fastq.gz\t\tILLUMINA\tHiSeq\n' "$header" >"$out"
     else printf '%s\n' "$header" >"$out"; fi;;
   */esearch.fcgi)
     if [[ ${MODE:-fallback} == none ]]; then printf '{"esearchresult":{"idlist":[]}}' >"$out"
@@ -53,11 +53,13 @@ CURL_BIN="$mock" "$repo/scripts/resolve_read_runs.sh" SAMN03275524 "$tmp/report"
 [[ $(sed -n '3p' "$tmp/report" | cut -f1) == SRR1746971 ]]
 
 source "$repo/scripts/classify_ena_fastq.sh"
-while IFS=$'\t' read -r run layout urls md5s; do
+while IFS=$'\t' read -r run layout urls md5s platform model; do
   classify_ena_fastq "$run" "$layout" "$urls" "$md5s" 2>"$tmp/classifier.err"
   [[ $FASTQ_LAYOUT == PE && $FASTQ_R1_URL == *"${run}_1.fastq.gz" && $FASTQ_R2_URL == *"${run}_2.fastq.gz" ]]
   [[ $FASTQ_R1_MD5 == m1 && $FASTQ_R2_MD5 == m2 ]]
 done < <(tail -n +2 "$tmp/report")
+awk -F '\t' 'NR == 1 { exit !($5 == "instrument_platform" && $6 == "instrument_model") }
+  NR > 1 { exit !($5 == "ILLUMINA" && $6 == "HiSeq 2000") }' "$tmp/report"
 
 MODE=direct_run CURL_BIN="$mock" "$repo/scripts/resolve_read_runs.sh" SRR1 "$tmp/direct"
 [[ $(tail -n +2 "$tmp/direct" | wc -l) -eq 1 ]]

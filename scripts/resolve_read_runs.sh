@@ -8,7 +8,7 @@ output=$2
 curl_bin=${CURL_BIN:-curl}
 ena_base=${ENA_API_BASE:-https://www.ebi.ac.uk/ena/portal/api}
 ncbi_base=${NCBI_EUTILS_BASE:-https://eutils.ncbi.nlm.nih.gov/entrez/eutils}
-header=$'run_accession\tlibrary_layout\tfastq_ftp\tfastq_md5'
+header=$'run_accession\tlibrary_layout\tfastq_ftp\tfastq_md5\tinstrument_platform\tinstrument_model'
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -40,9 +40,9 @@ normalize_discovery_report() {
     awk -F '\t' -v OFS='\t' '
         NR > 1 {
             sub(/\r$/, "", $NF)
-            if (NF == 4 && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "") print
+            if (NF == 6 && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "" && $5 != "") print
         }
-    ' "$report" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -k3,3 -k4,4 >"$normalized.rows"
+    ' "$report" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -k3,3 -k4,4 -k5,5 -k6,6 >"$normalized.rows"
     if [[ ! -s "$normalized.rows" ]]; then
         printf 'WARN: ENA %s discovery returned no usable exact-run rows; continuing fallback resolution\n' "$context" >&2
         return 1
@@ -57,7 +57,7 @@ validate_exact_run_report() {
         NR > 1 {
             sub(/\r$/, "", $NF)
             rows++
-            if (NF == 4 && $1 == requested && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "") usable++
+            if (NF == 6 && $1 == requested && $1 ~ /^(SRR|ERR|DRR)[0-9]+$/ && $2 != "" && $3 != "" && $4 != "" && $5 != "") usable++
         }
         END { exit !(rows == 1 && usable == 1) }
     ' "$report"
@@ -66,14 +66,14 @@ ena_report() {
     local acc=$1 dest=$2
     "$curl_bin" -fsSLG "$ena_base/filereport" \
         --data-urlencode "accession=$acc" --data-urlencode result=read_run \
-        --data-urlencode fields=run_accession,library_layout,fastq_ftp,fastq_md5 \
+        --data-urlencode fields=run_accession,library_layout,fastq_ftp,fastq_md5,instrument_platform,instrument_model \
         --data-urlencode format=tsv -o "$dest"
 }
 write_normalized() {
     local source=$1
     # Preserve duplicates for build_run_manifest.sh, which safely deduplicates
     # identical records and hard-fails conflicting records for one run ID.
-    { printf '%s\n' "$header"; tail -n +2 "$source" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -k3,3 -k4,4; } >"$output"
+    { printf '%s\n' "$header"; tail -n +2 "$source" | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -k3,3 -k4,4 -k5,5 -k6,6; } >"$output"
 }
 
 # A transport failure is transient (non-42).  A valid header with no rows is a
@@ -89,7 +89,7 @@ query="run_accession=\"$accession\" OR experiment_accession=\"$accession\" OR st
 set +e
 "$curl_bin" -fsSLG "$ena_base/search" --data-urlencode result=read_run \
     --data-urlencode "query=$query" \
-    --data-urlencode fields=run_accession,library_layout,fastq_ftp,fastq_md5 \
+    --data-urlencode fields=run_accession,library_layout,fastq_ftp,fastq_md5,instrument_platform,instrument_model \
     --data-urlencode format=tsv -o "$tmp/search.tsv"
 search_rc=$?
 set -e

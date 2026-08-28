@@ -206,6 +206,8 @@ workflow {
                 id               : row.sample_id,
                 pair_id          : row.run_id,
                 layout           : row.layout,
+                instrument_platform : row.instrument_platform,
+                instrument_model : row.instrument_model,
                 n_pairs          : row.expected_run_count.toInteger(),
                 expected_run_ids : row.expected_run_ids.tokenize(',').sort()
             ]
@@ -221,7 +223,11 @@ workflow {
     // Route each completed run immediately; other runs may still be downloading.
     ch_fastq_alignment_routes = ch_fastq_pairs
         .map { meta, species_name, ref_name, reads ->
-            long total_fastq_bytes = reads.collect { it.size() }.sum() as long
+            // A single path is Iterable over its path components. Normalize at
+            // this boundary so SE data cannot be mistaken for a collection of
+            // component names and every downstream route receives List<Path>.
+            def read_files = (reads instanceof Collection) ? reads.toList() : [reads]
+            long total_fastq_bytes = read_files.collect { it.size() }.sum() as long
             double total_fastq_size_gb = total_fastq_bytes / 1024.0 / 1024.0 / 1024.0
             boolean use_chunked = params.enable_chunked_alignment && total_fastq_size_gb >= (params.chunked_alignment_size_threshold_gb as double)
             String route_reason = !params.enable_chunked_alignment ? 'user_disabled' : (use_chunked ? 'above_threshold' : 'below_threshold')
@@ -230,7 +236,7 @@ workflow {
                 meta.id, meta.pair_id, meta.layout, total_fastq_size_gb,
                 params.chunked_alignment_size_threshold_gb, params.enable_chunked_alignment,
                 use_chunked ? 'chunked' : 'standard', route_reason)
-            tuple(routed_meta, species_name, ref_name, reads)
+            tuple(routed_meta, species_name, ref_name, read_files)
         }
         .branch { meta, species_name, ref_name, reads ->
             chunked: meta.use_chunked_alignment
@@ -244,6 +250,7 @@ workflow {
         .splitCsv(header: true, sep: '\t')
         .map { row ->
             def meta = [id: row.sample_id, pair_id: row.run_id, layout: row.layout,
+                instrument_platform: row.instrument_platform, instrument_model: row.instrument_model,
                 chunk_id: row.chunk_id, n_chunks: row.expected_chunks.toInteger(),
                 n_pairs: row.expected_pairs.toInteger(),
                 expected_run_ids: row.expected_run_ids.tokenize(',').sort()]
@@ -287,7 +294,9 @@ workflow {
             if (metas.any { it.n_pairs != meta.n_pairs || it.expected_run_ids.sort() != expected }) {
                 error "CRITICAL: Sample ${meta.id} has inconsistent authoritative run manifests."
             }
-            tuple(meta, species_list[0], refs[0], bams)
+            def usedRuns = metas.collect { [run_id: it.pair_id, instrument_platform: it.instrument_platform,
+                instrument_model: it.instrument_model, layout: it.layout] }.sort { it.run_id }
+            tuple(meta + [used_runs: usedRuns], species_list[0], refs[0], bams)
         }
 
     MERGE_BAMS(ch_bam_grouped)
@@ -305,19 +314,21 @@ process RESOLVE_READ_RUNS {
     label 'down_task'
     errorStrategy { task.exitStatus == 42 ? 'terminate' : (task.attempt <= 2 ? 'retry' : 'terminate') }
     maxRetries 2
+    publishDir "${params.outdir}/${meta.id}/metadata", mode: 'copy', pattern: "${meta.id}.excluded_runs.tsv"
 
     input:
     tuple val(meta), val(species_name), val(ref_name)
 
     output:
     path "run_manifest.tsv", emit: manifest
+    path "${meta.id}.excluded_runs.tsv", emit: excluded_runs
 
     script:
     """
     #!/usr/bin/env bash
     set -Eeuo pipefail
     "${projectDir}/scripts/resolve_read_runs.sh" "${meta.id}" resolved_report.tsv
-    "${projectDir}/scripts/build_run_manifest.sh" "${meta.id}" "${species_name}" "${ref_name}" resolved_report.tsv run_manifest.tsv
+    "${projectDir}/scripts/build_run_manifest.sh" "${meta.id}" "${species_name}" "${ref_name}" resolved_report.tsv run_manifest.tsv "${meta.id}.excluded_runs.tsv"
     """
 }
 
@@ -858,12 +869,12 @@ process SPLIT_FASTQ_CHUNKS {
     echo "INFO: Number of chunks: \${expected_chunks}"
     echo "INFO: Chunk IDs: \$(paste -sd, chunk_ids.txt)"
 
-    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tlayout\\tchunk_id\\tr1\\tr2\\texpected_chunks\\texpected_pairs\\texpected_run_ids" > chunks.tsv
+    echo -e "sample_id\\tspecies_name\\tref_name\\trun_id\\tinstrument_platform\\tinstrument_model\\tlayout\\tchunk_id\\tr1\\tr2\\texpected_chunks\\texpected_pairs\\texpected_run_ids" > chunks.tsv
     while read -r chunk_id; do
         if [[ "${meta.layout}" == "PE" ]]; then
-            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}_R1.fastq.gz\\t\$PWD/chunks/\${chunk_id}_R2.fastq.gz\\t\${expected_chunks}\\t${meta.n_pairs}\\t${meta.expected_run_ids.join(',')}" >> chunks.tsv
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.instrument_platform}\\t${meta.instrument_model}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}_R1.fastq.gz\\t\$PWD/chunks/\${chunk_id}_R2.fastq.gz\\t\${expected_chunks}\\t${meta.n_pairs}\\t${meta.expected_run_ids.join(',')}" >> chunks.tsv
         else
-            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}.fastq.gz\\t.\\t\${expected_chunks}\\t${meta.n_pairs}\\t${meta.expected_run_ids.join(',')}" >> chunks.tsv
+            echo -e "${meta.id}\\t${species_name}\\t${ref_name}\\t${meta.pair_id}\\t${meta.instrument_platform}\\t${meta.instrument_model}\\t${meta.layout}\\t\${chunk_id}\\t\$PWD/chunks/\${chunk_id}.fastq.gz\\t.\\t\${expected_chunks}\\t${meta.n_pairs}\\t${meta.expected_run_ids.join(',')}" >> chunks.tsv
         fi
     done < chunk_ids.txt
 
@@ -1051,18 +1062,22 @@ process BAM_TO_CRAM {
     tag "${meta.id}"
     label 'alignment_related'
     // The marker is created last and is the publication-completion signal.
-    publishDir "${params.outdir}/${meta.id}/alignment", mode: 'copy', pattern: "*.{cram,crai,complete}"
+    publishDir "${params.outdir}/${meta.id}/alignment", mode: 'copy', pattern: "*.{cram,crai,complete,used_short_read_runs.tsv}"
 
     input:
     tuple val(meta), val(species_name), val(ref_name), path(bam), path(bai)
 
     output:
-    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.cram"), path("${meta.id}.cram.crai"), path("${meta.id}.cram.complete"), emit: cram
+    tuple val(meta), val(species_name), val(ref_name), path("${meta.id}.cram"), path("${meta.id}.cram.crai"), path("${meta.id}.cram.complete"), path("${meta.id}.used_short_read_runs.tsv"), emit: cram
 
     script:
     def ref_file = "${params.global_ref_dir}/${ref_name}.fa"
     def cram_out = "${meta.id}.cram"
     def crai_out = "${meta.id}.cram.crai"
+    def usedRunRows = meta.used_runs.collect { run ->
+        "${meta.id}\t${species_name}\t${ref_name}\t${run.run_id}\t${run.instrument_platform}\t${run.instrument_model}\t${run.layout}"
+    }.join('\n')
+    def expectedRunIds = meta.expected_run_ids.sort().join(',')
     
     """
     #!/usr/bin/env bash
@@ -1088,6 +1103,14 @@ process BAM_TO_CRAM {
     samtools quickcheck -v "${cram_out}"
     samtools idxstats "${cram_out}" >/dev/null
 
+    # The authoritative set that passed MERGE_BAMS is recorded only after the
+    # final CRAM and index validate successfully.
+    cat > "${meta.id}.used_short_read_runs.tsv.tmp" <<'USED_RUNS_EOF'
+sample_id\tspecies_name\tref_name\trun_id\tinstrument_platform\tinstrument_model\tlayout
+${usedRunRows}
+USED_RUNS_EOF
+    mv "${meta.id}.used_short_read_runs.tsv.tmp" "${meta.id}.used_short_read_runs.tsv"
+
     cram_size=\$(stat -c%s "${cram_out}")
     crai_size=\$(stat -c%s "${crai_out}")
     samtools_version=\$(samtools --version | head -n1)
@@ -1102,6 +1125,11 @@ samtools_version=\${samtools_version}
 completed_at=\$(date --iso-8601=seconds)
 EOF
     mv "${meta.id}.cram.complete.tmp" "${meta.id}.cram.complete"
+
+    # Update the shared index last. flock and atomic replacement make this
+    # safe for concurrent streaming workers and retries.
+    "${projectDir}/scripts/update_used_short_read_runs.sh" \
+      "${params.outdir}/metadata/used_short_read_runs.tsv" "${meta.id}" "${species_name}" "${ref_name}" '${expectedRunIds}'
     """
 }
 
