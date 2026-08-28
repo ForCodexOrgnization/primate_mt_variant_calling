@@ -465,6 +465,9 @@ process ALIGN_AND_SORT {
     trap cleanup EXIT
 
     # ===== alignment + sort =====
+    # Legacy SRA-only workflow: it has no ENA run-manifest platform field and
+    # remains intentionally Illumina-only. Platform-aware production launches
+    # use preprocessing.nf.
     bwa mem -K 100000000 -v 3 -t ${task.cpus} -Y \\
       -R "@RG\\tID:${meta.id}.${meta.pair_id}\\tSM:${meta.id}\\tPL:ILLUMINA\\tLB:${meta.id}" \\
       ${ref_file} ${r1} ${r2} | \\

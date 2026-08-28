@@ -508,8 +508,9 @@ process REALIGN_TO_DECOY {
       -0 /dev/null -s /dev/null -n \
       ${meta.id}.with_mates.name.bam
 
+    SAM_PLATFORM=\$("${projectDir}/scripts/sam_platform.sh" derive ${bam_with_mates})
     bwa mem -K 100000000 -v 3 -t ${task.cpus ?: 4} \
-      -R '@RG\\tID:${meta.id}\\tSM:${meta.id}\\tLB:${meta.id}\\tPL:ILLUMINA\\tPU:${meta.id}' \
+      -R "@RG\\tID:${meta.id}\\tSM:${meta.id}\\tLB:${meta.id}\\tPL:\${SAM_PLATFORM}\\tPU:${meta.id}" \
       ${decoy_fa} \
       ${meta.id}.R1.fastq.gz ${meta.id}.R2.fastq.gz | \
       samtools sort -@ ${task.cpus ?: 4} -m ${sort_mem_per_thread} -T "\$tmp/${meta.id}" -o ${meta.id}.decoy_realign.bam -

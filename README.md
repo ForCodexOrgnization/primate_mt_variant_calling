@@ -1,5 +1,22 @@
 # primate_mt_variant_calling
 
+## Sequencing-platform input policy
+
+The preprocessing pipeline accepts actual paired-end FASTQ runs from an
+explicit short-read platform whitelist: **ILLUMINA**, **DNBSEQ**, and
+**BGISEQ**. The downloadable FASTQ structure determined by
+`scripts/classify_ena_fastq.sh` is authoritative; ENA `library_layout` is not
+used to admit single-end data. Actual SE runs and PacBio, Oxford Nanopore,
+LS454, or other platforms are excluded with their original ENA provenance.
+
+Each biological sample uses exactly one platform. All eligible PE runs from
+the highest available priority are selected in the order ILLUMINA > DNBSEQ >
+BGISEQ; otherwise-eligible lower-priority runs are recorded as excluded and
+are never merged into the sample CRAM. SAM read groups retain `PL:ILLUMINA`
+for Illumina and use the canonical `PL:DNBSEQ` for both DNBSEQ and BGISEQ.
+The used-run provenance continues to record the original ENA platform and
+instrument model, so BGISEQ remains identifiable as BGISEQ there.
+
 ## mtCN output
 
 The consensus NUMT round 2 pipeline calculates mitochondrial copy number (mtCN) after round 2 chrM-assigned BAMs are generated. The result is written to:

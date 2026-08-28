@@ -349,9 +349,11 @@ run_stage() {
         if [[ "$stage" == pre && -f "$stage_log" ]]; then
             local root_cause
             root_cause=$(awk '/DETERMINISTIC_FASTQ_FAILURE class=/{line=$0} END{print line}' "$stage_log")
-            if [[ "$root_cause" =~ class=([^[:space:]]+)[[:space:]]+run=([^[:space:]]+)[[:space:]]+reason=(.*)$ ]]; then
+            if [[ "$root_cause" =~ DETERMINISTIC_FASTQ_FAILURE[[:space:]]+class=([^[:space:]]+) ]]; then
                 FAILURE_CLASS=${BASH_REMATCH[1]}
-                FAILURE_REASON="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+                FAILURE_REASON=${root_cause#*class="${FAILURE_CLASS}"}
+                FAILURE_REASON=${FAILURE_REASON# }
+                [[ -n "$FAILURE_REASON" ]] || FAILURE_REASON="deterministic FASTQ failure"
                 FAILURE_NONRETRYABLE=1
             fi
         fi

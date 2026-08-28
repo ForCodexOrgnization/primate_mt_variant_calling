@@ -987,7 +987,8 @@ process REALIGN_TO_CONSENSUS_ASSIGNED_BAMS {
           -s "\${SAMPLE_ID}.singleton.fq" \
           -
 
-    RG="@RG\\tID:\${SAMPLE_ID}\\tSM:\${SAMPLE_ID}\\tPL:ILLUMINA\\tLB:\${SAMPLE_ID}"
+    SAM_PLATFORM=\$("${projectDir}/scripts/sam_platform.sh" derive ${round1_bam})
+    RG="@RG\\tID:\${SAMPLE_ID}\\tSM:\${SAMPLE_ID}\\tPL:\${SAM_PLATFORM}\\tLB:\${SAMPLE_ID}"
 
     align_branch() {
         local branch="\$1"
