@@ -1412,7 +1412,7 @@ EOFOPT
 
 process LIFTBACK_ROUND2_VCF_TO_ORIGINAL {
     tag { "Lift back round2 VCF to original mt coordinates for ${meta.id}" }
-    label 'generation_related'
+    label 'liftback_related'
     publishDir "${params.outdir}/${meta.id}/round_2_variant_calling_original_coords", mode: 'copy'
 
     input:
@@ -1586,11 +1586,11 @@ def cigar_base(pos, rec):
 def metrics(chrom,pos,ref,alt):
     c={k:0 for k in ['support','as','xs','both','ge','eq','gt']}
     region=f'{chrom}:{pos}-{pos}'
-    try:
-        out=subprocess.check_output(['samtools','view',bam,region], text=True)
-    except subprocess.CalledProcessError:
-        out=''
-    for rec in out.splitlines():
+    command=['samtools','view',bam,region]
+    proc=subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    if proc.stdout is None:
+        raise RuntimeError(f"Failed to capture samtools stdout for {region}")
+    for rec in proc.stdout:
         base,t=cigar_base(pos, rec)
         if base != alt.upper(): continue
         c['support']+=1
@@ -1598,6 +1598,10 @@ def metrics(chrom,pos,ref,alt):
         c['as']+=has_as; c['xs']+=has_xs; c['both']+=(has_as and has_xs)
         if has_as and has_xs:
             c['ge'] += t['XS'] >= t['AS']; c['eq'] += t['XS'] == t['AS']; c['gt'] += t['XS'] > t['AS']
+    proc.stdout.close()
+    rc=proc.wait()
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, command)
     return c
 
 def append_info(info, vals):
