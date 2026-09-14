@@ -30,9 +30,30 @@ handler = SCRIPT[SCRIPT.index("handle_sample_requeue()") : SCRIPT.index("trap ha
 for item in ("TIMEOUT_SIGNAL", "resume_eligible\\t1", 'kill -TERM "$ACTIVE_CHILD_PID"',
              "for _ in $(seq 1 60)", 'kill -KILL "$ACTIVE_CHILD_PID"',
              'wait "$ACTIVE_CHILD_PID"', 'write_running_marker REQUEUE_REQUESTED',
+             'cancel_sample_inner_slurm_jobs requeue',
              'scontrol requeue "$element_id"'):
     assert item in handler
 assert "safe_remove" not in handler
+
+# Requeue safety: Nextflow cluster jobs are independent Slurm jobs, so killing
+# only the local Nextflow client is insufficient.  The launcher must identify
+# live nf-* jobs by scheduler-reported WorkDir and cancel only jobs rooted under
+# this locked sample workspace.  A startup guard covers hard-kill/node-loss
+# cases where the previous wrapper never ran its USR1 cleanup path.
+assert "list_sample_inner_slurm_jobs()" in SCRIPT
+assert "cancel_sample_inner_slurm_jobs()" in SCRIPT
+inner_guard = SCRIPT[SCRIPT.index("list_sample_inner_slurm_jobs()") : SCRIPT.index("write_running_marker()")]
+for item in ('squeue -h -u "$USER" -o "%i|%j"',
+             '[[ "$job_name" == nf-* ]]',
+             'scontrol show job -o "$job_id"',
+             'case "$work_real" in',
+             '"$sample_real"/*) printf',
+             'scancel "${jobs[@]}"',
+             'scancel --signal=KILL "${remaining[@]}"'):
+    assert item in inner_guard
+assert 'rm -rf' not in inner_guard
+assert 'cancel_sample_inner_slurm_jobs startup_stale_job_guard' in SCRIPT
+assert 'FAILURE_CLASS=STALE_INNER_SLURM_JOBS' in SCRIPT
 
 for stage in ("pre", "numt", "round1", "round2"):
     assert f'run_stage {stage} "${{LOG_DIR}}/{stage}.log"' in SCRIPT
