@@ -278,6 +278,64 @@ current_slurm_element_id() {
         printf '%s\n' "${SLURM_JOB_ID:-}"
     fi
 }
+
+# Nextflow's Slurm executor submits independent scheduler jobs.  Terminating the
+# local Nextflow client does not guarantee that those jobs disappear.  Scope
+# cleanup by the scheduler-reported WorkDir so we only touch jobs whose work
+# directory is inside this locked sample workspace.
+list_sample_inner_slurm_jobs() {
+    local current_element job_id job_name info workdir work_real
+    current_element=$(current_slurm_element_id)
+    while IFS='|' read -r job_id job_name; do
+        [[ -n "$job_id" ]] || continue
+        [[ "$job_id" == "$current_element" || "$job_id" == "${SLURM_JOB_ID:-}" ]] && continue
+        [[ "$job_name" == nf-* ]] || continue
+        info=$(scontrol show job -o "$job_id" 2>/dev/null || true)
+        [[ -n "$info" ]] || continue
+        workdir=$(printf '%s\n' "$info" | sed -n 's/.* WorkDir=\([^ ]*\).*/\1/p')
+        [[ -n "$workdir" ]] || continue
+        work_real=$(realpath -m "$workdir")
+        case "$work_real" in
+            "$sample_real"/*) printf '%s\n' "$job_id" ;;
+        esac
+    done < <(squeue -h -u "$USER" -o "%i|%j" 2>/dev/null || true)
+}
+
+cancel_sample_inner_slurm_jobs() {
+    local reason=${1:-cleanup} i
+    local -a jobs=() remaining=()
+    mapfile -t jobs < <(list_sample_inner_slurm_jobs)
+    if (( ${#jobs[@]} == 0 )); then
+        log "INFO: no residual inner Slurm jobs for sample=${SAMPLE_ID} reason=${reason}"
+        return 0
+    fi
+
+    log "WARNING: cancelling residual inner Slurm jobs sample=${SAMPLE_ID} reason=${reason} jobs=${jobs[*]}"
+    scancel "${jobs[@]}" 2>/dev/null || true
+    for i in $(seq 1 60); do
+        mapfile -t remaining < <(list_sample_inner_slurm_jobs)
+        if (( ${#remaining[@]} == 0 )); then
+            log "INFO: residual inner Slurm jobs cleared sample=${SAMPLE_ID} reason=${reason}"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log "WARNING: residual inner Slurm jobs did not exit after TERM; forcing KILL sample=${SAMPLE_ID} jobs=${remaining[*]}"
+    scancel --signal=KILL "${remaining[@]}" 2>/dev/null || true
+    for i in $(seq 1 30); do
+        mapfile -t remaining < <(list_sample_inner_slurm_jobs)
+        if (( ${#remaining[@]} == 0 )); then
+            log "INFO: residual inner Slurm jobs cleared after KILL sample=${SAMPLE_ID} reason=${reason}"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log "ERROR: residual inner Slurm jobs remain sample=${SAMPLE_ID} reason=${reason} jobs=${remaining[*]}"
+    return 1
+}
+
 write_running_marker() {
     local worker_state=$1 current_attempt=$2
     atomic_write "${STATE_DIR}/${SAMPLE_ID}.running.tsv" <<EOF
@@ -318,6 +376,10 @@ EOF
         if kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; then kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true; fi
         wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
         ACTIVE_CHILD_PID=""
+    fi
+    if ! cancel_sample_inner_slurm_jobs requeue; then
+        log "ERROR: refusing to requeue while residual inner Slurm jobs remain for ${SAMPLE_ID}"
+        exit 75
     fi
     element_id=$(current_slurm_element_id)
     if [[ -z "$element_id" ]]; then
@@ -476,6 +538,16 @@ EOF
 }
 
 attempt=0; max_attempts=$((1 + IMMEDIATE_SAMPLE_RETRIES)); success=0
+# A previous wrapper can disappear without running its USR1 handler (node loss,
+# hard kill, scheduler failure).  Before starting a new Nextflow client, clear
+# any scheduler jobs still executing inside this sample workspace.  Completed
+# work remains available to Nextflow -resume; only live duplicate executors are
+# removed.
+if ! cancel_sample_inner_slurm_jobs startup_stale_job_guard; then
+    FAILURE_CLASS=STALE_INNER_SLURM_JOBS
+    FAILURE_REASON="Residual inner Slurm jobs could not be cleared before sample restart"
+    FAILURE_NONRETRYABLE=1
+fi
 write_running_marker RUNNING "$attempt"
 while (( attempt < max_attempts )); do
     attempt=$((attempt + 1))
