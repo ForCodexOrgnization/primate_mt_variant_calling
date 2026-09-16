@@ -1,0 +1,126 @@
+name: Apply portable cluster env paths
+
+on:
+  push:
+    branches:
+      - portable-cluster-env-paths
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[portable-env-patched]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: portable-cluster-env-paths
+          fetch-depth: 0
+
+      - name: Patch cluster-specific environment paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}\nTARGET:\n{old}")
+              p.write_text(text.replace(old, new, 1))
+
+          # Workflow code must not know which cluster it is on. The site configs own the path.
+          replace_once(
+              "preprocessing.nf",
+              '    def aria2_bin = "/home/lt692/.conda/envs/aria2_env/bin/aria2c"',
+              "    def aria2_bin = params.aria2_bin?.toString() ?: 'aria2c'"
+          )
+
+          # Bouchet: project-space conda environments, with optional launch-time overrides.
+          replace_once(
+              "nextflow.config",
+              "    // This binary is used by the coordinator (not a process beforeScript).\n    samtools_bin     = System.getenv('SAMTOOLS_BIN') ?: 'samtools'",
+              "    // Cluster-specific executables/environments. Keep site paths in config, not workflow code.\n    aria2_bin        = System.getenv('ARIA2_BIN') ?: '/nfs/roberts/project/pi_njl27/lt692/conda_envs/aria2_env/bin/aria2c'\n    numt_conda_env   = System.getenv('NUMT_CONDA_ENV') ?: '/nfs/roberts/project/pi_njl27/lt692/conda_envs/numt_env'\n\n    // This binary is used by the coordinator (not a process beforeScript).\n    samtools_bin     = System.getenv('SAMTOOLS_BIN') ?: 'samtools'"
+          )
+          replace_once(
+              "nextflow.config",
+              '        NUMT_ENV="${NUMT_CONDA_ENV:-/nfs/roberts/project/pi_njl27/lt692/conda_envs/numt_env}"',
+              '        NUMT_ENV="__NUMT_CONDA_ENV__"'
+          )
+          replace_once(
+              "nextflow.config",
+              '''        "${PYTHON_BIN}" -V
+        "${PYTHON_BIN}" - <<'PYNUMT'
+import pysam
+
+print("[NUMT ENV] pysam_file", getattr(pysam, "__file__", None))
+print("[NUMT ENV] pysam_version", getattr(pysam, "__version__", "<unknown>"))
+if not hasattr(pysam, "AlignmentFile"):
+    raise RuntimeError("pysam import succeeded but pysam.AlignmentFile is unavailable")
+print("[NUMT ENV] pysam AlignmentFile OK")
+PYNUMT''',
+              '''        "${PYTHON_BIN}" -V
+        "${PYTHON_BIN}" -c 'import pysam; print("[NUMT ENV] pysam_file", getattr(pysam, "__file__", None)); print("[NUMT ENV] pysam_version", getattr(pysam, "__version__", "<unknown>")); assert hasattr(pysam, "AlignmentFile"), "pysam import succeeded but pysam.AlignmentFile is unavailable"; print("[NUMT ENV] pysam AlignmentFile OK")' '''.rstrip()
+          )
+          replace_once(
+              "nextflow.config",
+              "    '''\n\n\n}\n\n// Allow batch launchers",
+              "    '''.replace('__NUMT_CONDA_ENV__', params.numt_conda_env.toString())\n\n\n}\n\n// Allow batch launchers"
+          )
+
+          # McCleary: preserve the existing home-directory environments, but expose them via params.
+          replace_once(
+              "nextflow_mcc.config",
+              "    mosdepth_bin     = '/home/lt692/ycga_work/primate_mt_variant_calling/mosdepth'",
+              "    mosdepth_bin     = '/home/lt692/ycga_work/primate_mt_variant_calling/mosdepth'\n\n    // Cluster-specific executables/environments. Keep site paths in config, not workflow code.\n    aria2_bin        = System.getenv('ARIA2_BIN') ?: '/home/lt692/.conda/envs/aria2_env/bin/aria2c'\n    numt_conda_env   = System.getenv('NUMT_CONDA_ENV') ?: '/home/lt692/.conda/envs/blast_env'"
+          )
+          replace_once(
+              "nextflow_mcc.config",
+              '''        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate /home/lt692/.conda/envs/blast_env
+
+        export CONDA_PREFIX="/home/lt692/.conda/envs/blast_env"
+        export PATH="${CONDA_PREFIX}/bin:${PATH}"
+        export PYTHON_BIN="${CONDA_PREFIX}/bin/python"''',
+              '''        source "$(conda info --base)/etc/profile.d/conda.sh"
+
+        NUMT_ENV="__NUMT_CONDA_ENV__"
+        [[ -x "${NUMT_ENV}/bin/python" ]] || {
+          echo "ERROR: NUMT conda environment is missing or incomplete: ${NUMT_ENV}" >&2
+          exit 1
+        }
+
+        conda activate "${NUMT_ENV}"
+        export CONDA_PREFIX="${NUMT_ENV}"
+        export PATH="${CONDA_PREFIX}/bin:${PATH}"
+        export PYTHON_BIN="${CONDA_PREFIX}/bin/python"'''
+          )
+          replace_once(
+              "nextflow_mcc.config",
+              "    '''\n\n}\n\n// ====================================================================================\n//                             PROCESS & EXECUTOR",
+              "    '''.replace('__NUMT_CONDA_ENV__', params.numt_conda_env.toString())\n\n}\n\n// ====================================================================================\n//                             PROCESS & EXECUTOR"
+          )
+          PY
+
+          git diff --check
+          grep -n "def aria2_bin" preprocessing.nf
+          grep -n "aria2_bin\|numt_conda_env\|NUMT_ENV=" nextflow.config nextflow_mcc.config
+          if grep -n "PYNUMT" nextflow.config; then
+            echo "ERROR: PYNUMT heredoc is still present" >&2
+            exit 1
+          fi
+
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/portable-cluster-env-paths.yml
+          git add preprocessing.nf nextflow.config nextflow_mcc.config
+          git commit -m "Parameterize cluster-specific conda paths [portable-env-patched]"
+          git push origin HEAD:portable-cluster-env-paths
