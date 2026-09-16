@@ -362,7 +362,7 @@ process DOWNLOAD_FASTQ_RUN {
     tuple val(meta), val(species_name), val(ref_name), path("*.fastq.gz"), emit: reads
 
     script:
-    def aria2_bin = "/home/lt692/.conda/envs/aria2_env/bin/aria2c"
+    def aria2_bin = params.aria2_bin?.toString() ?: 'aria2c'
     def aria2_connections = params.aria2_connections as int
     def aria2_splits = params.aria2_splits as int
     def fallback_connections = params.aria2_fallback_connections as int
