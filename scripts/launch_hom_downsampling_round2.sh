@@ -30,6 +30,17 @@ for f in "$R1_BAM" "$R1_NUMT" "$R1_NUMT_VCF"; do
 done
 [[ -d "$R1_VCF_DIR" ]] || { echo "ERROR: Missing Round1 mtDNA variant calling: $R1_VCF_DIR" >&2; exit 1; }
 REF_MT="${HOM_MT_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
+REF_WHOLE="${HOM_GLOBAL_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
+REF_NAME="$(awk -F '\t' 'NR==1 {print $3; exit}' "$SAMPLE_TSV")"
+[[ -s "$REF_WHOLE/$REF_NAME.fa" && -s "$REF_WHOLE/$REF_NAME.fa.fai" ]] || {
+    echo "ERROR: Missing matching whole-genome reference/index: $REF_WHOLE/$REF_NAME.fa" >&2
+    exit 1
+}
+CRAM_LINK_ROOT="$INPUT_DIR/cram"
+[[ -s "$CRAM_LINK_ROOT/$SAMPLE/alignment/$SAMPLE.cram" && -s "$CRAM_LINK_ROOT/$SAMPLE/alignment/$SAMPLE.cram.crai" ]] || {
+    echo "ERROR: Round1 pilot original CRAM links missing: $CRAM_LINK_ROOT/$SAMPLE/alignment" >&2
+    exit 1
+}
 CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 mkdir -p "$ROUND2_OUT" "$WORK" "$BASE/logs"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
@@ -38,7 +49,7 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
       --output="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.out" \
       --error="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.err" \
       --cpus-per-task=2 --mem=8G --time=24:00:00 \
-      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_MT_REF_DIR="$REF_MT",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP" \
+      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_MT_REF_DIR="$REF_MT",HOM_GLOBAL_REF_DIR="$REF_WHOLE",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP" \
       "$0" "$SAMPLE" "$TARGET" "$SEED"
     exit 0
 fi
@@ -76,5 +87,8 @@ nextflow run "$CALL_REPO/primate_pipeline_round2_consensus_NUMT.nf" \
     --outdir "$ROUND2_OUT" \
     --round1_outdir "$ROUND1_OUT" \
     --ref_dir "$REF_MT" \
+    --global_ref_dir "$REF_WHOLE" \
+    --mtcn_nuclear_ref_dir "$REF_WHOLE" \
+    --cram_dirs "$CRAM_LINK_ROOT" \
     --wdl_script_round2 "$CALL_REPO/MitochondriaPipeline_multisample_autoLen_round2_NUMT.wdl" \
     --consensus_min_dp "$CONSENSUS_MIN_DP"
