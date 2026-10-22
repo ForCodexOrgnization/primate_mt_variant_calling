@@ -23,7 +23,7 @@ for f in "$R1_BAM" "$R1_NUMT" "$R1_NUMT_VCF"; do
     [[ -s "$f" ]] || { echo "ERROR: Missing Round1 prerequisite $f" >&2; exit 1; }
 done
 [[ -d "$R1_VCF_DIR" ]] || { echo "ERROR: Missing Round1 mtDNA variant calling: $R1_VCF_DIR" >&2; exit 1; }
-REF_MT="${HOM_MT_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
+REF_MT="${HOM_MT_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
 CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 mkdir -p "$ROUND2_OUT" "$WORK" "$BASE/logs"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
