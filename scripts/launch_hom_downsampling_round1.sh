@@ -37,14 +37,42 @@ ln -sfn "$CRAM_SRC" "$CRAM_LINK_DIR/$SAMPLE.cram"
 ln -sfn "$CRAM_SRC.crai" "$CRAM_LINK_DIR/$SAMPLE.cram.crai"
 SAMPLE_TSV="$INPUT_DIR/sample.tsv"
 printf '%s\t%s\t%s\n' "$SAMPLE" "$SPECIES" "$REF_NAME" > "$SAMPLE_TSV"
-# Reuse production NUMT BEDs and reference config by default. Do not derive
-# NUMT intervals from the read-extraction BED, which can have different semantics.
+# Prefer the original, sample-specific production NUMT BED if available.
+# For pilots transferred from a different filesystem, reconstruct ONLY the
+# nuclear intervals from the exact chrM+NUMT extraction BED. Do not include chrM
+# as a NUMT contig: PREPARE_DECOY_REFERENCE adds chrM separately.
 NUMT_BED_DIR="${HOM_NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict}"
 NUMT_BED="$NUMT_BED_DIR/$SAMPLE.highconf_numt.bed"
-[[ -e "$NUMT_BED" ]] || { echo "ERROR: NUMT BED missing: $NUMT_BED" >&2; exit 1; }
 REF_WHOLE="${HOM_GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
 REF_MT="${HOM_MT_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
-[[ -s "$REF_WHOLE/$REF_NAME.fa" && -s "$REF_MT/$REF_NAME.fa" ]] || { echo "Missing matching .fa reference for $REF_NAME" >&2; exit 1; }
+[[ -s "$REF_WHOLE/$REF_NAME.fa" && -s "$REF_MT/$REF_NAME.fa" ]] || { echo "ERROR: Missing matching .fa reference for $REF_NAME; whole=$REF_WHOLE/$REF_NAME.fa mt=$REF_MT/$REF_NAME.fa" >&2; exit 1; }
+if [[ ! -e "$NUMT_BED" ]]; then
+    SOURCE_BED="${HOM_ORIGINAL_TARGET_BED:-/home/lt692/ycga_work/primate_downsampling_pilot/candidate_input/$SAMPLE/round_1/candidate_reads/$SAMPLE.target_chrM_plus_NUMT.bed}"
+    [[ -s "$SOURCE_BED" ]] || { echo "ERROR: Neither production NUMT BED nor extraction BED found: $NUMT_BED / $SOURCE_BED" >&2; exit 1; }
+    NUMT_BED_DIR="$INPUT_DIR/numt_bed_from_extraction"
+    mkdir -p "$NUMT_BED_DIR"
+    NUMT_BED="$NUMT_BED_DIR/$SAMPLE.highconf_numt.bed"
+    TMP_BED="$NUMT_BED.tmp.$"
+    awk 'BEGIN{FS=OFS="\t"}
+      /^[#]/ || NF==0 {next}
+      NF<3 || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $3<=$2 {bad++;next}
+      $1=="chrM" {next}
+      {print $1,$2,$3; kept++}
+      END{if(bad>0 || kept==0){print "ERROR: Invalid or missing nuclear NUMT intervals in extraction BED" > "/dev/stderr";exit 1}}
+    ' "$SOURCE_BED" > "$TMP_BED" || { rm -f "$TMP_BED"; exit 1; }
+    # Fail fast if the extraction interval set does not match the selected
+    # whole-genome FASTA coordinate system.
+    [[ -s "$REF_WHOLE/$REF_NAME.fa.fai" ]] || { echo "ERROR: Missing whole-genome FASTA index" >&2; rm -f "$TMP_BED"; exit 1; }
+    awk 'BEGIN{FS=OFS="\t";bad=0}
+      NR==FNR {lens[$1]=$2;next}
+      !($1 in lens) || $3>lens[$1] {print "ERROR: NUMT BED interval not present in reference: " $0 > "/dev/stderr";bad++}
+      END{exit (bad>0)}
+    ' "$REF_WHOLE/$REF_NAME.fa.fai" "$TMP_BED" || { rm -f "$TMP_BED"; exit 1; }
+    mv "$TMP_BED" "$NUMT_BED"
+    echo "INFO: Production NUMT BED unavailable; derived $(wc -l < "$NUMT_BED") nuclear intervals from original extraction BED: $SOURCE_BED"
+    echo "WARNING: Verify the derived intervals match the original Round1 decoy BED before interpreting HOM results."
+fi
+echo "INFO: Round1 NUMT BED: $NUMT_BED"
 # The consensus threshold is not silently changed for the low-depth study.
 CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
