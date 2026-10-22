@@ -13,12 +13,17 @@ CALL_REPO="${HOM_CALL_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ANALYSIS_ROOT="${HOM_ANALYSIS_ROOT:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis_coverage_only}"
 BASE="$ANALYSIS_ROOT/results/qc_coverage_only/downsampling_pilot"
 SAMPLE="${1:?Provide sample ID}"; TARGET="${2:?Provide raw depth target}"; SEED="${3:?Provide seed}"
+case "$TARGET" in 30) DEFAULT_DP=10;; 50) DEFAULT_DP=20;; 100) DEFAULT_DP=30;; *) DEFAULT_DP=100;; esac
+CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-$DEFAULT_DP}"
+CONSENSUS_MIN_AF="${HOM_CONSENSUS_MIN_AF:-0.95}"
+[[ "$CONSENSUS_MIN_DP" =~ ^[1-9][0-9]*$ && "$CONSENSUS_MIN_AF" =~ ^0\.[0-9]+$|^1(\.0+)?$ ]] || { echo "Invalid consensus thresholds" >&2; exit 2; }
+CONSENSUS_EXPR="FMT/AF>=${CONSENSUS_MIN_AF} && FMT/DP>=${CONSENSUS_MIN_DP}"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9_]+$ && "$TARGET" =~ ^[0-9]+$ && "$SEED" =~ ^[0-9]+$ ]] || { echo "Invalid arguments" >&2; exit 2; }
-INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE"
+INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}"
 SAMPLE_TSV="$INPUT_DIR/sample.tsv"
-ROUND1_OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round1"
-ROUND2_OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round2"
-WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}/$SAMPLE/round2"
+ROUND1_OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/round1"
+ROUND2_OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/round2"
+WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/$SAMPLE/round2"
 [[ -s "$SAMPLE_TSV" ]] || { echo "Missing Round1 pilot sample TSV" >&2; exit 1; }
 # Guard that the required Round1 data exist; directories alone don't count.
 R1_BAM="$ROUND1_OUT/$SAMPLE/round_1/candidate_reads/$SAMPLE.with_mates.bam"
@@ -41,15 +46,15 @@ CRAM_LINK_ROOT="$INPUT_DIR/cram"
     echo "ERROR: Round1 pilot original CRAM links missing: $CRAM_LINK_ROOT/$SAMPLE/alignment" >&2
     exit 1
 }
-CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 mkdir -p "$ROUND2_OUT" "$WORK" "$BASE/logs"
+printf "sample\ttarget_depth\tseed\tconsensus_min_af\tconsensus_min_dp\tconsensus_filter_expr\n%s\t%s\t%s\t%s\t%s\t%s\n" "$SAMPLE" "$TARGET" "$SEED" "$CONSENSUS_MIN_AF" "$CONSENSUS_MIN_DP" "$CONSENSUS_EXPR" > "$ROUND2_OUT/pilot_consensus_parameters.tsv"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     echo "Submitting Round2 HOM pilot sample=$SAMPLE target=$TARGET seed=$SEED"
     sbatch --parsable --partition="${HOM_SLURM_PARTITION:-ycga}" --job-name="hom_r2_${SAMPLE}" \
       --output="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.out" \
       --error="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.err" \
       --cpus-per-task=2 --mem=8G --time=24:00:00 \
-      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_MT_REF_DIR="$REF_MT",HOM_GLOBAL_REF_DIR="$REF_WHOLE",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP" \
+      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_MT_REF_DIR="$REF_MT",HOM_GLOBAL_REF_DIR="$REF_WHOLE",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP",HOM_CONSENSUS_MIN_AF="$CONSENSUS_MIN_AF" \
       "$0" "$SAMPLE" "$TARGET" "$SEED"
     exit 0
 fi
@@ -91,4 +96,6 @@ nextflow run "$CALL_REPO/primate_pipeline_round2_consensus_NUMT.nf" \
     --mtcn_nuclear_ref_dir "$REF_WHOLE" \
     --cram_dirs "$CRAM_LINK_ROOT" \
     --wdl_script_round2 "$CALL_REPO/MitochondriaPipeline_multisample_autoLen_round2_NUMT.wdl" \
-    --consensus_min_dp "$CONSENSUS_MIN_DP"
+    --consensus_min_dp "$CONSENSUS_MIN_DP" \
+    --consensus_min_af "$CONSENSUS_MIN_AF" \
+    --consensus_filter_expr "$CONSENSUS_EXPR"
