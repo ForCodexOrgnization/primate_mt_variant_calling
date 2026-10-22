@@ -70,4 +70,5 @@ nextflow run "$CALL_REPO/primate_pipeline_round2_consensus_NUMT.nf" \
     --outdir "$ROUND2_OUT" \
     --round1_outdir "$ROUND1_OUT" \
     --ref_dir "$REF_MT" \
+    --wdl_script_round2 "$CALL_REPO/MitochondriaPipeline_multisample_autoLen_round2_NUMT.wdl" \
     --consensus_min_dp "$CONSENSUS_MIN_DP"
