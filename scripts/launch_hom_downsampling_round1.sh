@@ -77,7 +77,7 @@ echo "INFO: Round1 NUMT BED: $NUMT_BED"
 CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     echo "Submitting Round1 HOM pilot sample=$SAMPLE target=$TARGET seed=$SEED; consensus_min_dp=$CONSENSUS_MIN_DP"
-    sbatch --parsable --job-name="hom_r1_${SAMPLE}" \
+    sbatch --parsable --partition="${HOM_SLURM_PARTITION:-ycga}" --job-name="hom_r1_${SAMPLE}" \
       --output="$BASE/logs/hom_r1_${SAMPLE}_${TARGET}x_${SEED}_%j.out" \
       --error="$BASE/logs/hom_r1_${SAMPLE}_${TARGET}x_${SEED}_%j.err" \
       --cpus-per-task=2 --mem=8G --time=24:00:00 \
@@ -114,7 +114,7 @@ mkdir -p "$WORK/.nextflow"
 cd "$WORK"
 echo "INFO: Nextflow launch directory: $PWD"
 nextflow run "$CALL_REPO/primate_pipeline_numt_decoy_round1.nf" \
-    -profile cluster -resume -w "$WORK" \
+    -c "$CALL_REPO/nextflow_mcc.config" -profile cluster -resume -w "$WORK" \
     --sample_tsv "$SAMPLE_TSV" \
     --outdir "$OUT" \
     --cram_dirs "$INPUT_DIR/cram" \
