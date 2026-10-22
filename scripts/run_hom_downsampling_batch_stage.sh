@@ -13,9 +13,11 @@ MANIFEST="$BASE/candidate_downsampling_jobs.tsv"
 # manifest header: sample species input_bam mt_contig original_raw_median target_depth seed fraction
 read -r SAMPLE TARGET SEED < <(awk -F '\t' -v n="$TASK" 'NR==n+1 {print $1, $6, $7; exit}' "$MANIFEST")
 [[ -n "${SAMPLE:-}" && "$TARGET" =~ ^[0-9]+$ && "$SEED" =~ ^[0-9]+$ ]] || { echo "Invalid manifest task $TASK" >&2; exit 1; }
+case "$TARGET" in 30) DEFAULT_DP=10;; 50) DEFAULT_DP=20;; 100) DEFAULT_DP=30;; *) DEFAULT_DP=100;; esac
+CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-$DEFAULT_DP}"
 echo "HOM_STAGE=$STAGE task=$TASK sample=$SAMPLE target=$TARGET seed=$SEED host=$(hostname)"
-R1="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round1/$SAMPLE"
-R2="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round2/$SAMPLE"
+R1="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/round1/$SAMPLE"
+R2="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/round2/$SAMPLE"
 if [[ "$STAGE" == "round1" ]]; then
   # Only skip if both mtDNA split calls and NUMT split calls are present.
   MTDNA="$R1/round_1/mtdna_variant_calling"
