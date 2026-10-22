@@ -99,9 +99,25 @@ workflow {
     //   2) name-sort
     //   3) keep only templates with both mates present in the target subset
     // This avoids rescuing arbitrary NUMT/chrM mates from elsewhere in the genome.
-    EXTRACT_CANDIDATE_READS(LOCATE_CRAM.out.cram_info)
-
-    ch_bam_plus_ref = EXTRACT_CANDIDATE_READS.out.bam_with_mates.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
+    // Optional HOM downsampling pilot input, produced by primate_mtDNA_analysis.
+    // Reuse exactly the selected chrM+NUMT templates without re-extracting WGS reads.
+    // Standard production behavior is unchanged when candidate_bam_root is unset.
+    if (params.candidate_bam_root) {
+        if (!params.candidate_target_depth || !params.candidate_seed) {
+            error "candidate_bam_root requires candidate_target_depth and candidate_seed"
+        }
+        ch_candidate_bams = ch_samples.map { meta, species_name, ref_name ->
+            def candidate = file("${params.candidate_bam_root}/${meta.id}/${meta.id}.candidate.ds${params.candidate_target_depth}x.seed${params.candidate_seed}.bam")
+            if (!candidate.exists() || candidate.size() == 0) {
+                error "Missing or empty downsampled candidate BAM: ${candidate}"
+            }
+            tuple(meta, species_name, ref_name, candidate)
+        }
+        ch_bam_plus_ref = ch_candidate_bams.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
+    } else {
+        EXTRACT_CANDIDATE_READS(LOCATE_CRAM.out.cram_info)
+        ch_bam_plus_ref = EXTRACT_CANDIDATE_READS.out.bam_with_mates.join(PREPARE_DECOY_REFERENCE.out.decoy_ref, by: [0,1,2])
+    }
     REALIGN_TO_DECOY(ch_bam_plus_ref)
 
     ch_numt_call_input = REALIGN_TO_DECOY.out.realign_bam.join(PREPARE_DECOY_REFERENCE.out.decoy_ref_for_numt_calling, by: [0,1,2])
