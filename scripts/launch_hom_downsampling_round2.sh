@@ -36,7 +36,28 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
       "$0" "$SAMPLE" "$TARGET" "$SEED"
     exit 0
 fi
-module load Nextflow/24.10.2
+load_pilot_nextflow() {
+    # Prefer an existing executable (including user conda installations).
+    if command -v nextflow >/dev/null 2>&1; then
+        echo "INFO: Using Nextflow: $(command -v nextflow)"
+        nextflow -version
+        return
+    fi
+    if [[ -n "${NEXTFLOW_MODULE:-}" ]]; then
+        module load "$NEXTFLOW_MODULE"
+        command -v nextflow >/dev/null 2>&1 || {
+            echo "ERROR: NEXTFLOW_MODULE=$NEXTFLOW_MODULE loaded but nextflow is not on PATH" >&2
+            exit 1
+        }
+        echo "INFO: Using Nextflow module $NEXTFLOW_MODULE"
+        nextflow -version
+        return
+    fi
+    echo "ERROR: Nextflow not found on PATH. On McCleary, check: module spider Nextflow" >&2
+    echo "Then either activate an environment providing nextflow or set NEXTFLOW_MODULE to a valid module before submitting." >&2
+    exit 1
+}
+load_pilot_nextflow
 cd "$CALL_REPO"
 nextflow run "$CALL_REPO/primate_pipeline_round2_consensus_NUMT.nf" \
     -profile cluster -resume -w "$WORK" \
