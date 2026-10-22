@@ -121,6 +121,7 @@ nextflow run "$CALL_REPO/primate_pipeline_numt_decoy_round1.nf" \
     --numt_bed_dir "$NUMT_BED_DIR" \
     --global_ref_dir "$REF_WHOLE" \
     --ref_dir "$REF_MT" \
+    --wdl_script "$CALL_REPO/MitochondriaPipeline_multisample_autoLen.wdl" \
     --candidate_bam_root "$BAM_ROOT" \
     --candidate_target_depth "$TARGET" \
     --candidate_seed "$SEED" \
