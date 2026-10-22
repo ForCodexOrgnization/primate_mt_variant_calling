@@ -27,6 +27,12 @@ CRAM_SRC="${HOM_WGS_ROOT:-/home/lt692/ycga_work/primate_downsampling_pilot/wgs_i
 [[ -s "$CRAM_SRC" && -s "$CRAM_SRC.crai" ]] || { echo "ERROR: Original CRAM/CRAI not found at $CRAM_SRC" >&2; exit 1; }
 CRAM_LINK_DIR="$INPUT_DIR/cram/$SAMPLE/alignment"
 mkdir -p "$CRAM_LINK_DIR" "$OUT" "$WORK" "$BASE/logs"
+# Round2 FIND_ROUND1_OUTPUTS expects the published candidate BAM in Round1
+# even when Round1 EXTRACT_CANDIDATE_READS is intentionally bypassed.
+ROUND1_CANDIDATE="$OUT/$SAMPLE/round_1/candidate_reads"
+mkdir -p "$ROUND1_CANDIDATE"
+ln -sfn "$BAM" "$ROUND1_CANDIDATE/$SAMPLE.with_mates.bam"
+ln -sfn "$BAM.bai" "$ROUND1_CANDIDATE/$SAMPLE.with_mates.bam.bai"
 ln -sfn "$CRAM_SRC" "$CRAM_LINK_DIR/$SAMPLE.cram"
 ln -sfn "$CRAM_SRC.crai" "$CRAM_LINK_DIR/$SAMPLE.cram.crai"
 SAMPLE_TSV="$INPUT_DIR/sample.tsv"
