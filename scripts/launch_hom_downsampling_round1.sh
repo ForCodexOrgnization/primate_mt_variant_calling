@@ -16,6 +16,12 @@ BASE="$ANALYSIS_ROOT/results/qc_coverage_only/downsampling_pilot"
 SAMPLE="${1:?Provide sample ID}"
 TARGET="${2:?Provide raw candidate depth target}"
 SEED="${3:?Provide subsampling seed}"
+# Explicit experimental condition; optional HOM_CONSENSUS_MIN_DP overrides the adaptive default.
+case "$TARGET" in 30) DEFAULT_DP=10;; 50) DEFAULT_DP=20;; 100) DEFAULT_DP=30;; *) DEFAULT_DP=100;; esac
+CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-$DEFAULT_DP}"
+CONSENSUS_MIN_AF="${HOM_CONSENSUS_MIN_AF:-0.95}"
+[[ "$CONSENSUS_MIN_DP" =~ ^[1-9][0-9]*$ && "$CONSENSUS_MIN_AF" =~ ^0\.[0-9]+$|^1(\.0+)?$ ]] || { echo "Invalid consensus thresholds" >&2; exit 2; }
+CONSENSUS_EXPR="FMT/AF>=${CONSENSUS_MIN_AF} && FMT/DP>=${CONSENSUS_MIN_DP}"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9_]+$ && "$TARGET" =~ ^[0-9]+$ && "$SEED" =~ ^[0-9]+$ ]] || { echo "Invalid sample/target/seed" >&2; exit 2; }
 BAM_ROOT="$BASE/candidate_downsampled"
 BAM="$BAM_ROOT/$SAMPLE/$SAMPLE.candidate.ds${TARGET}x.seed${SEED}.bam"
@@ -26,13 +32,14 @@ SPECIES="$(awk -F '\t' -v s="$SAMPLE" 'NR>1 && $1==s {print $2;exit}' "$PILOT_TA
 [[ -n "$SPECIES" ]] || { echo "Sample $SAMPLE not present in $PILOT_TABLE" >&2; exit 1; }
 # The pilot list uses species-name references. Override for any exceptions.
 REF_NAME="${HOM_REF_NAME:-$SPECIES}"
-INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE"
-OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round1"
-WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}/$SAMPLE/round1"
+INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}"
+OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/round1"
+WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}/$SAMPLE/round1"
 CRAM_SRC="${HOM_WGS_ROOT:-/home/lt692/ycga_work/primate_downsampling_pilot/wgs_input}/$SAMPLE/$SAMPLE.cram"
 [[ -s "$CRAM_SRC" && -s "$CRAM_SRC.crai" ]] || { echo "ERROR: Original CRAM/CRAI not found at $CRAM_SRC" >&2; exit 1; }
 CRAM_LINK_DIR="$INPUT_DIR/cram/$SAMPLE/alignment"
 mkdir -p "$CRAM_LINK_DIR" "$OUT" "$WORK" "$BASE/logs"
+printf "sample\ttarget_depth\tseed\tconsensus_min_af\tconsensus_min_dp\tconsensus_filter_expr\n%s\t%s\t%s\t%s\t%s\t%s\n" "$SAMPLE" "$TARGET" "$SEED" "$CONSENSUS_MIN_AF" "$CONSENSUS_MIN_DP" "$CONSENSUS_EXPR" > "$OUT/pilot_consensus_parameters.tsv"
 # Round2 FIND_ROUND1_OUTPUTS expects the published candidate BAM in Round1
 # even when Round1 EXTRACT_CANDIDATE_READS is intentionally bypassed.
 ROUND1_CANDIDATE="$OUT/$SAMPLE/round_1/candidate_reads"
@@ -79,15 +86,13 @@ if [[ ! -e "$NUMT_BED" ]]; then
     echo "WARNING: Verify the derived intervals match the original Round1 decoy BED before interpreting HOM results."
 fi
 echo "INFO: Round1 NUMT BED: $NUMT_BED"
-# The consensus threshold is not silently changed for the low-depth study.
-CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     echo "Submitting Round1 HOM pilot sample=$SAMPLE target=$TARGET seed=$SEED; consensus_min_dp=$CONSENSUS_MIN_DP"
     sbatch --parsable --partition="${HOM_SLURM_PARTITION:-ycga}" --job-name="hom_r1_${SAMPLE}" \
       --output="$BASE/logs/hom_r1_${SAMPLE}_${TARGET}x_${SEED}_%j.out" \
       --error="$BASE/logs/hom_r1_${SAMPLE}_${TARGET}x_${SEED}_%j.err" \
       --cpus-per-task=2 --mem=8G --time=24:00:00 \
-      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_REF_NAME="$REF_NAME",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP",HOM_NUMT_BED_DIR="$NUMT_BED_DIR",HOM_GLOBAL_REF_DIR="$REF_WHOLE",HOM_MT_REF_DIR="$REF_MT" \
+      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_REF_NAME="$REF_NAME",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP",HOM_CONSENSUS_MIN_AF="$CONSENSUS_MIN_AF",HOM_NUMT_BED_DIR="$NUMT_BED_DIR",HOM_GLOBAL_REF_DIR="$REF_WHOLE",HOM_MT_REF_DIR="$REF_MT" \
       "$0" "$SAMPLE" "$TARGET" "$SEED"
     exit 0
 fi
@@ -131,4 +136,6 @@ nextflow run "$CALL_REPO/primate_pipeline_numt_decoy_round1.nf" \
     --candidate_bam_root "$BAM_ROOT" \
     --candidate_target_depth "$TARGET" \
     --candidate_seed "$SEED" \
-    --consensus_min_dp "$CONSENSUS_MIN_DP"
+    --consensus_min_dp "$CONSENSUS_MIN_DP" \
+    --consensus_min_af "$CONSENSUS_MIN_AF" \
+    --consensus_filter_expr "$CONSENSUS_EXPR"
