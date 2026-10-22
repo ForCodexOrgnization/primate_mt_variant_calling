@@ -16,7 +16,7 @@ SAMPLE="${1:?Provide sample ID}"; TARGET="${2:?Provide raw depth target}"; SEED=
 case "$TARGET" in 30) DEFAULT_DP=10;; 50) DEFAULT_DP=20;; 100) DEFAULT_DP=30;; *) DEFAULT_DP=100;; esac
 CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-$DEFAULT_DP}"
 CONSENSUS_MIN_AF="${HOM_CONSENSUS_MIN_AF:-0.95}"
-[[ "$CONSENSUS_MIN_DP" =~ ^[1-9][0-9]*$ && "$CONSENSUS_MIN_AF" =~ ^0\.[0-9]+$|^1(\.0+)?$ ]] || { echo "Invalid consensus thresholds" >&2; exit 2; }
+[[ "$CONSENSUS_MIN_DP" =~ ^[1-9][0-9]*$ && "$CONSENSUS_MIN_AF" =~ ^(0\.[0-9]+|1(\.0+)?)$ ]] || { echo "Invalid consensus thresholds" >&2; exit 2; }
 CONSENSUS_EXPR="FMT/AF>=${CONSENSUS_MIN_AF} && FMT/DP>=${CONSENSUS_MIN_DP}"
 [[ "$SAMPLE" =~ ^[A-Za-z0-9_]+$ && "$TARGET" =~ ^[0-9]+$ && "$SEED" =~ ^[0-9]+$ ]] || { echo "Invalid arguments" >&2; exit 2; }
 INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE/ds${TARGET}x_seed${SEED}_cdp${CONSENSUS_MIN_DP}"
