@@ -43,8 +43,8 @@ printf '%s\t%s\t%s\n' "$SAMPLE" "$SPECIES" "$REF_NAME" > "$SAMPLE_TSV"
 # as a NUMT contig: PREPARE_DECOY_REFERENCE adds chrM separately.
 NUMT_BED_DIR="${HOM_NUMT_BED_DIR:-/nfs/roberts/pi/pi_njl27/lt692/numt_discovery/primate_results_numt_besthit_strict}"
 NUMT_BED="$NUMT_BED_DIR/$SAMPLE.highconf_numt.bed"
-REF_WHOLE="${HOM_GLOBAL_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
-REF_MT="${HOM_MT_REF_DIR:-/home/lt692/scratch_pi_njl27/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
+REF_WHOLE="${HOM_GLOBAL_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_whole}"
+REF_MT="${HOM_MT_REF_DIR:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis/references/variant_calling/Ref_chrM}"
 [[ -s "$REF_WHOLE/$REF_NAME.fa" && -s "$REF_MT/$REF_NAME.fa" ]] || { echo "ERROR: Missing matching .fa reference for $REF_NAME; whole=$REF_WHOLE/$REF_NAME.fa mt=$REF_MT/$REF_NAME.fa" >&2; exit 1; }
 if [[ ! -e "$NUMT_BED" ]]; then
     SOURCE_BED="${HOM_ORIGINAL_TARGET_BED:-/home/lt692/ycga_work/primate_downsampling_pilot/candidate_input/$SAMPLE/round_1/candidate_reads/$SAMPLE.target_chrM_plus_NUMT.bed}"
