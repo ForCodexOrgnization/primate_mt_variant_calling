@@ -58,7 +58,12 @@ load_pilot_nextflow() {
     exit 1
 }
 load_pilot_nextflow
-cd "$CALL_REPO"
+# Nextflow creates .nextflow/history.lock relative to the launch directory.
+# Run from this pilot's writable, isolated work directory rather than the
+# variant-calling source checkout, which might be read-only on McCleary.
+mkdir -p "$WORK/.nextflow"
+cd "$WORK"
+echo "INFO: Nextflow launch directory: $PWD"
 nextflow run "$CALL_REPO/primate_pipeline_round2_consensus_NUMT.nf" \
     -profile cluster -resume -w "$WORK" \
     --sample_tsv "$SAMPLE_TSV" \
