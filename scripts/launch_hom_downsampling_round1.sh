@@ -28,7 +28,7 @@ SPECIES="$(awk -F '\t' -v s="$SAMPLE" 'NR>1 && $1==s {print $2;exit}' "$PILOT_TA
 REF_NAME="${HOM_REF_NAME:-$SPECIES}"
 INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE"
 OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round1"
-WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}/round1"
+WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}/$SAMPLE/round1"
 CRAM_SRC="${HOM_WGS_ROOT:-/home/lt692/ycga_work/primate_downsampling_pilot/wgs_input}/$SAMPLE/$SAMPLE.cram"
 [[ -s "$CRAM_SRC" && -s "$CRAM_SRC.crai" ]] || { echo "ERROR: Original CRAM/CRAI not found at $CRAM_SRC" >&2; exit 1; }
 CRAM_LINK_DIR="$INPUT_DIR/cram/$SAMPLE/alignment"
