@@ -3,7 +3,13 @@
 # bash scripts/launch_hom_downsampling_round2.sh ERS12091908 100 101
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CALL_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+# sbatch executes a spool copy of this script. Carry the real checkout path
+# from the submit host; BASH_SOURCE on a worker is under /var/spool/slurmd.
+CALL_REPO="${HOM_CALL_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+[[ -s "$CALL_REPO/primate_pipeline_numt_decoy_round1.nf" ]] || {
+    echo "ERROR: Invalid HOM_CALL_REPO=$CALL_REPO (Round1 workflow missing)" >&2
+    exit 1
+}
 ANALYSIS_ROOT="${HOM_ANALYSIS_ROOT:-/vast/palmer/scratch/lake_nicole/lt692/primate_mtDNA_analysis_coverage_only}"
 BASE="$ANALYSIS_ROOT/results/qc_coverage_only/downsampling_pilot"
 SAMPLE="${1:?Provide sample ID}"; TARGET="${2:?Provide raw depth target}"; SEED="${3:?Provide seed}"
@@ -32,7 +38,7 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
       --output="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.out" \
       --error="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.err" \
       --cpus-per-task=2 --mem=8G --time=24:00:00 \
-      --export=ALL,HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_MT_REF_DIR="$REF_MT",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP" \
+      --export=ALL,HOM_CALL_REPO="$CALL_REPO",HOM_ANALYSIS_ROOT="$ANALYSIS_ROOT",HOM_MT_REF_DIR="$REF_MT",HOM_CONSENSUS_MIN_DP="$CONSENSUS_MIN_DP" \
       "$0" "$SAMPLE" "$TARGET" "$SEED"
     exit 0
 fi
