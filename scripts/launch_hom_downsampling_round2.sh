@@ -18,7 +18,7 @@ INPUT_DIR="$BASE/variant_calling_pilot_inputs/$SAMPLE"
 SAMPLE_TSV="$INPUT_DIR/sample.tsv"
 ROUND1_OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round1"
 ROUND2_OUT="$BASE/variant_calling_pilot/ds${TARGET}x_seed${SEED}/round2"
-WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}/round2"
+WORK="$BASE/nf_work/ds${TARGET}x_seed${SEED}/$SAMPLE/round2"
 [[ -s "$SAMPLE_TSV" ]] || { echo "Missing Round1 pilot sample TSV" >&2; exit 1; }
 # Guard that the required Round1 data exist; directories alone don't count.
 R1_BAM="$ROUND1_OUT/$SAMPLE/round_1/candidate_reads/$SAMPLE.with_mates.bam"
