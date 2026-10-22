@@ -28,7 +28,7 @@ CONSENSUS_MIN_DP="${HOM_CONSENSUS_MIN_DP:-100}"
 mkdir -p "$ROUND2_OUT" "$WORK" "$BASE/logs"
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     echo "Submitting Round2 HOM pilot sample=$SAMPLE target=$TARGET seed=$SEED"
-    sbatch --parsable --job-name="hom_r2_${SAMPLE}" \
+    sbatch --parsable --partition="${HOM_SLURM_PARTITION:-ycga}" --job-name="hom_r2_${SAMPLE}" \
       --output="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.out" \
       --error="$BASE/logs/hom_r2_${SAMPLE}_${TARGET}x_${SEED}_%j.err" \
       --cpus-per-task=2 --mem=8G --time=24:00:00 \
@@ -65,7 +65,7 @@ mkdir -p "$WORK/.nextflow"
 cd "$WORK"
 echo "INFO: Nextflow launch directory: $PWD"
 nextflow run "$CALL_REPO/primate_pipeline_round2_consensus_NUMT.nf" \
-    -profile cluster -resume -w "$WORK" \
+    -c "$CALL_REPO/nextflow_mcc.config" -profile cluster -resume -w "$WORK" \
     --sample_tsv "$SAMPLE_TSV" \
     --outdir "$ROUND2_OUT" \
     --round1_outdir "$ROUND1_OUT" \
