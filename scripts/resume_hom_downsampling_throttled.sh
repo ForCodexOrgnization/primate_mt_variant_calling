@@ -78,7 +78,21 @@ if [[ "${1:-}" == "--worker" ]]; then
     echo "SUCCESS: $SAMPLE ds${DEPTH}x seed$SEED cdp$CDP FINISH=$(date -Is)"
     exit 0
 fi
-[[ "${1:-}" == "" || "${1:-}" == "--dry-run" ]] || { echo "Usage: $0 [--dry-run|--worker]" >&2; exit 2; }
+DRY_RUN=0
+ARRAY_RANGE="1-$N"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --array)
+            [[ $# -ge 2 ]] || { echo "ERROR: --array requires a value" >&2; exit 2; }
+            ARRAY_RANGE="$2"; shift 2 ;;
+        *) echo "Usage: $0 [--dry-run] [--array INDEX|START-END]" >&2; exit 2 ;;
+    esac
+done
+[[ "$ARRAY_RANGE" =~ ^[0-9]+(-[0-9]+)?$ ]] || { echo "ERROR: invalid array range: $ARRAY_RANGE" >&2; exit 2; }
+START="${ARRAY_RANGE%%-*}"
+END="${ARRAY_RANGE##*-}"
+(( 10#$START >= 1 && 10#$END <= N && 10#$START <= 10#$END )) || { echo "ERROR: array range must be within 1-$N" >&2; exit 2; }
 # Override only this pilot's Nextflow submission rate; do not change the
 # production nextflow_mcc.config. Both launchers read this environment variable.
 mkdir -p "$BASE/logs" "$BASE/pilot_config"
@@ -95,13 +109,14 @@ echo "Recovery: $N manifest trials; one controller at a time; sequential Round1 
 echo "Nextflow throttle=$RATE queueSize=$QUEUE_SIZE; cooldown after each run=${COOLDOWN}s"
 echo "DP mode: ${HOM_CONSENSUS_MIN_DP:-adaptive (30:10, 50:20, 100:30)}"
 echo "Config: $THROTTLE_CONFIG"
-if [[ "${1:-}" == "--dry-run" ]]; then
+echo "Array indices: $ARRAY_RANGE"
+if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "DRY RUN: no job submitted."
     exit 0
 fi
 # A single array (rather than separate round arrays) prevents cross-stage
 # overlap; array%1 ensures at most one controller among these trials.
-JOB="$(sbatch --parsable --partition="$PARTITION" --array="1-${N}%1" \
+JOB="$(sbatch --parsable --partition="$PARTITION" --array="${ARRAY_RANGE}%1" \
   --job-name=hom_safe_resume --cpus-per-task=2 --mem=8G --time=24:00:00 \
   --output="$BASE/logs/hom_safe_resume_%A_%a.out" \
   --error="$BASE/logs/hom_safe_resume_%A_%a.err" \
