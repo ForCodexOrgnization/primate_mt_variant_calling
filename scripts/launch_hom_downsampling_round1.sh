@@ -118,6 +118,14 @@ load_pilot_nextflow() {
     exit 1
 }
 load_pilot_nextflow
+# Nextflow accepts a comma-separated configuration list. The optional
+# experiment-only file overrides the site-wide executor submission limits.
+NF_CONFIG="$CALL_REPO/nextflow_mcc.config"
+if [[ -n "${HOM_NF_EXTRA_CONFIG:-}" ]]; then
+    [[ -s "$HOM_NF_EXTRA_CONFIG" ]] || { echo "ERROR: Missing HOM_NF_EXTRA_CONFIG=$HOM_NF_EXTRA_CONFIG" >&2; exit 1; }
+    NF_CONFIG="$NF_CONFIG,$HOM_NF_EXTRA_CONFIG"
+fi
+echo "INFO: Nextflow config(s): $NF_CONFIG"
 # Nextflow creates .nextflow/history.lock relative to the launch directory.
 # Run from this pilot's writable, isolated work directory rather than the
 # variant-calling source checkout, which might be read-only on McCleary.
@@ -125,7 +133,7 @@ mkdir -p "$WORK/.nextflow"
 cd "$WORK"
 echo "INFO: Nextflow launch directory: $PWD"
 nextflow run "$CALL_REPO/primate_pipeline_numt_decoy_round1.nf" \
-    -c "$CALL_REPO/nextflow_mcc.config" -profile cluster -resume -w "$WORK" \
+    -c "$NF_CONFIG" -profile cluster -resume -w "$WORK" \
     --sample_tsv "$SAMPLE_TSV" \
     --outdir "$OUT" \
     --cram_dirs "$INPUT_DIR/cram" \
