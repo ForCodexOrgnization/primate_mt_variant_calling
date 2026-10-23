@@ -41,11 +41,18 @@ def main():
         rows = list(csv.DictReader(handle, delimiter="\t"))
     with pilot.open(newline="") as handle:
         pilot_rows = list(csv.reader(handle, delimiter="\t"))
-    # Preserve the reference-name convention of the existing pilot launcher.
+    # pilot_samples.tsv is a metadata table, NOT a Nextflow sample.tsv.
+    # Its third column may be a numeric QC metric (e.g. 99.988), rather
+    # than a reference name. Match the existing single-sample launcher:
+    # column 1 = sample ID; column 2 = species AND reference name.
     sample_info = {}
     for row in pilot_rows[1:]:
-        if len(row) >= 2 and row[0] and row[1]:
-            sample_info[row[0]] = (row[1], row[2] if len(row) > 2 and row[2] else row[1])
+        if len(row) >= 2 and row[0].strip() and row[1].strip():
+            sample = row[0].strip()
+            species = row[1].strip()
+            if sample in sample_info and sample_info[sample] != (species, species):
+                fail(f"Conflicting species for sample {sample} in pilot_samples.tsv")
+            sample_info[sample] = (species, species)
     subset = [r for r in rows if int(r["target_depth"]) == args.depth and int(r["seed"]) == args.seed]
     if len(subset) != 10 or len({r["sample"] for r in subset}) != 10:
         fail(f"Expected 10 unique samples for {args.depth}x seed{args.seed}; found {len(subset)}")
